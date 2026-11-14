@@ -17,5 +17,20 @@
   <body class="bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 antialiased selection:bg-blue-600 selection:text-white">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      (function () {
+        var rawEntry = document.querySelector('script[src="/src/main.tsx"]');
+        var isViteDev = !!document.querySelector('script[src*="@vite/client"]');
+        if (!rawEntry || isViteDev) return;
+        if (location.pathname.indexOf('/docs') !== -1) return;
+        fetch('./docs/index.html', { method: 'HEAD' })
+          .then(function (res) {
+            if (res.ok) {
+              location.replace('./docs/' + location.search + location.hash);
+            }
+          })
+          .catch(function () {});
+      })();
+    </script>
   </body>
 </html>
