@@ -7,10 +7,17 @@ import { ItemAnalysisView } from './components/ItemAnalysisView';
 import { MobileNav } from './components/MobileNav';
 import { QuizzesView } from './components/QuizzesView';
 import { ScannerView } from './components/ScannerView';
+import { SettingsView } from './components/SettingsView';
 import { Sidebar } from './components/Sidebar';
 import { SmartHud } from './components/SmartHud';
 import { StudyGuideView } from './components/StudyGuideView';
-import { SEED_QUIZZES, SEED_SCANS, SEED_STUDENTS } from './data/seedData';
+import {
+  SEED_QUIZZES,
+  SEED_SCANS,
+  SEED_STUDENTS,
+  SEED_SUBJECTS,
+  SEED_TEACHERS,
+} from './data/seedData';
 import type {
   AppView,
   ChoiceOption,
@@ -18,20 +25,32 @@ import type {
   Quiz,
   ScannedSheet,
   Student,
+  Subject,
+  SystemBackupPayload,
+  SystemSettings,
+  Teacher,
 } from './types/omr';
+import type { AutoJsonImportResult } from './utils/importExport';
 import { computeStateHash } from './utils/normalization';
 import {
   computeItemAnalysis,
   computeQuizSummary,
   gradeResponse,
 } from './utils/omrAnalytics';
+import {
+  DEFAULT_SYSTEM_SETTINGS,
+  sanitizeSystemSettings,
+} from './utils/systemSettings';
 
 interface PersistedState {
   students: Student[];
+  teachers: Teacher[];
+  subjects: Subject[];
   quizzes: Quiz[];
   scans: ScannedSheet[];
   activeQuizId: string;
   darkMode: boolean;
+  settings: SystemSettings;
 }
 
 const STORAGE_KEY = 'gradescan_omr_state_v1';
@@ -42,9 +61,25 @@ const VIEW_TITLES: Record<AppView, string> = {
   quizzes: 'ชุดข้อสอบและเฉลย',
   sheets: 'กระดาษคำตอบ OMR',
   analysis: 'วิเคราะห์ข้อสอบ',
-  classes: 'ชั้นเรียนและนักเรียน',
+  classes: 'นักเรียน · ครู · รายวิชา',
+  settings: 'ตั้งค่า & นำเข้า/ส่งออก',
   guide: 'คู่มือศึกษา ZipGrade',
 };
+
+function mergeByKey<T>(
+  existing: T[],
+  incoming: T[],
+  keyField: keyof T
+): T[] {
+  const map = new Map<string, T>();
+  for (const item of existing) {
+    map.set(String(item[keyField]), item);
+  }
+  for (const item of incoming) {
+    map.set(String(item[keyField]), item);
+  }
+  return Array.from(map.values());
+}
 
 function loadInitialState(): PersistedState {
   try {
@@ -59,10 +94,19 @@ function loadInitialState(): PersistedState {
       ) {
         return {
           students: parsed.students,
+          teachers:
+            Array.isArray(parsed.teachers) && parsed.teachers.length > 0
+              ? parsed.teachers
+              : SEED_TEACHERS,
+          subjects:
+            Array.isArray(parsed.subjects) && parsed.subjects.length > 0
+              ? parsed.subjects
+              : SEED_SUBJECTS,
           quizzes: parsed.quizzes,
           scans: parsed.scans,
           activeQuizId: parsed.activeQuizId ?? parsed.quizzes[0].id,
           darkMode: Boolean(parsed.darkMode),
+          settings: sanitizeSystemSettings(parsed.settings),
         };
       }
     }
@@ -71,10 +115,13 @@ function loadInitialState(): PersistedState {
   }
   return {
     students: SEED_STUDENTS,
+    teachers: SEED_TEACHERS,
+    subjects: SEED_SUBJECTS,
     quizzes: SEED_QUIZZES,
     scans: SEED_SCANS,
     activeQuizId: SEED_QUIZZES[0].id,
     darkMode: false,
+    settings: DEFAULT_SYSTEM_SETTINGS,
   };
 }
 
@@ -82,10 +129,13 @@ export default function App() {
   const initial = useMemo(() => loadInitialState(), []);
 
   const [students, setStudents] = useState<Student[]>(initial.students);
+  const [teachers, setTeachers] = useState<Teacher[]>(initial.teachers);
+  const [subjects, setSubjects] = useState<Subject[]>(initial.subjects);
   const [quizzes, setQuizzes] = useState<Quiz[]>(initial.quizzes);
   const [scans, setScans] = useState<ScannedSheet[]>(initial.scans);
   const [activeQuizId, setActiveQuizId] = useState<string>(initial.activeQuizId);
   const [darkMode, setDarkMode] = useState<boolean>(initial.darkMode);
+  const [settings, setSettings] = useState<SystemSettings>(initial.settings);
 
   const [activeView, setActiveView] = useState<AppView>('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
@@ -129,16 +179,19 @@ export default function App() {
     try {
       const payload: PersistedState = {
         students,
+        teachers,
+        subjects,
         quizzes,
         scans,
         activeQuizId,
         darkMode,
+        settings,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch {
       // Ignore quota errors cleanly
     }
-  }, [students, quizzes, scans, activeQuizId, darkMode]);
+  }, [students, teachers, subjects, quizzes, scans, activeQuizId, darkMode, settings]);
 
   const activeQuiz = useMemo(
     () => quizzes.find((q) => q.id === activeQuizId) ?? quizzes[0],
@@ -157,8 +210,13 @@ export default function App() {
   );
 
   const itemStats = useMemo(
-    () => computeItemAnalysis(activeQuiz, activeQuizScans),
-    [activeQuiz, activeQuizScans]
+    () =>
+      computeItemAnalysis(
+        activeQuiz,
+        activeQuizScans,
+        settings.upperLowerGroupPct
+      ),
+    [activeQuiz, activeQuizScans, settings.upperLowerGroupPct]
   );
 
   const summary = useMemo(
@@ -167,11 +225,18 @@ export default function App() {
   );
 
   const stateHash = useMemo(
-    () => computeStateHash({ s: students.length, q: quizzes.length, sc: scans.length }),
-    [students.length, quizzes.length, scans.length]
+    () =>
+      computeStateHash({
+        s: students.length,
+        t: teachers.length,
+        sub: subjects.length,
+        q: quizzes.length,
+        sc: scans.length,
+      }),
+    [students.length, teachers.length, subjects.length, quizzes.length, scans.length]
   );
 
-  // CRUD Handlers
+  // Scan CRUD Handlers
   const handleSaveScan = (newScan: ScannedSheet) => {
     setScans((prev) => [newScan, ...prev]);
   };
@@ -181,6 +246,17 @@ export default function App() {
     setScans((prev) => prev.filter((s) => s.id !== scanId));
     if (inspectedScanId === scanId) setInspectedScanId(null);
     triggerHud('ลบผลตรวจกระดาษคำตอบแล้ว', performance.now() - t0);
+  };
+
+  const handleBulkDeleteScans = (scanIds: string[]) => {
+    if (scanIds.length === 0) return;
+    const t0 = performance.now();
+    const idSet = new Set(scanIds);
+    setScans((prev) => prev.filter((s) => !idSet.has(s.id)));
+    if (inspectedScanId && idSet.has(inspectedScanId)) {
+      setInspectedScanId(null);
+    }
+    triggerHud(`ลบผลตรวจ ${scanIds.length} รายการแล้ว`, performance.now() - t0);
   };
 
   const handleUpdateScanAnswer = (
@@ -230,6 +306,46 @@ export default function App() {
     triggerHud(`เชื่อมเจ้าของกระดาษเป็น ${stu.studentCode}`, performance.now() - t0);
   };
 
+  const handleVerifyScanStudentCode = (scanId: string, rawCode: string) => {
+    const t0 = performance.now();
+    const clean = rawCode.replace(/\D/g, '');
+    if (!clean) return;
+    const padded = clean
+      .padStart(settings.studentIdDigits, '0')
+      .slice(-settings.studentIdDigits);
+    const matched = students.find(
+      (s) => s.studentCode === clean || s.studentCode === padded
+    );
+
+    setScans((prev) =>
+      prev.map((scan) =>
+        scan.id === scanId
+          ? matched
+            ? {
+                ...scan,
+                studentId: matched.id,
+                detectedStudentCode: matched.studentCode,
+                studentName: matched.fullName,
+                className: matched.className,
+              }
+            : {
+                ...scan,
+                studentId: null,
+                detectedStudentCode: padded,
+                studentName: `นักเรียนรหัส ${padded} (ไม่พบในฐานข้อมูล)`,
+              }
+          : scan
+      )
+    );
+    triggerHud(
+      matched
+        ? `ยืนยันรหัส ${matched.studentCode}: ${matched.fullName}`
+        : `ไม่พบรหัส ${padded} ในฐานข้อมูล`,
+      performance.now() - t0
+    );
+  };
+
+  // Quiz CRUD Handlers
   const handleCreateQuiz = (newQuiz: Quiz) => {
     const t0 = performance.now();
     setQuizzes((prev) => [newQuiz, ...prev]);
@@ -255,7 +371,6 @@ export default function App() {
         return updatedQuiz;
       })
     );
-    // Re-grade existing scans for this quiz optimistically
     setScans((prev) =>
       prev.map((scan) => {
         if (scan.quizId !== quizId || !updatedQuiz) return scan;
@@ -305,6 +420,7 @@ export default function App() {
     triggerHud('ลบชุดข้อสอบแล้ว', performance.now() - t0);
   };
 
+  // Students CRUD + Bulk
   const handleAddStudent = (student: Student) => {
     const t0 = performance.now();
     setStudents((prev) => [student, ...prev]);
@@ -323,18 +439,206 @@ export default function App() {
     triggerHud('ลบรายชื่อนักเรียนแล้ว', performance.now() - t0);
   };
 
-  const handleBulkImportStudents = (imported: Student[]) => {
+  const handleBulkAddStudents = (added: Student[]) => {
     const t0 = performance.now();
-    setStudents((prev) => [...imported, ...prev]);
-    triggerHud(`นำเข้ารายชื่อ ${imported.length} คน`, performance.now() - t0);
+    setStudents((prev) => mergeByKey(prev, added, 'studentCode'));
+    triggerHud(`เพิ่มนักเรียน ${added.length} คนสำเร็จ`, performance.now() - t0);
+  };
+
+  const handleBulkUpdateStudents = (updatedList: Student[]) => {
+    const t0 = performance.now();
+    const map = new Map(updatedList.map((s) => [s.id, s]));
+    setStudents((prev) => prev.map((s) => map.get(s.id) ?? s));
+    triggerHud(`อัปเดตนักเรียน ${updatedList.length} คนแล้ว`, performance.now() - t0);
+  };
+
+  const handleBulkDeleteStudents = (studentIds: string[]) => {
+    const t0 = performance.now();
+    const set = new Set(studentIds);
+    setStudents((prev) => prev.filter((s) => !set.has(s.id)));
+    triggerHud(`ลบนักเรียน ${studentIds.length} คนแล้ว`, performance.now() - t0);
+  };
+
+  const handleImportStudents = (
+    imported: Student[],
+    mode: 'merge' | 'replace'
+  ) => {
+    const t0 = performance.now();
+    setStudents((prev) =>
+      mode === 'replace'
+        ? imported
+        : mergeByKey(prev, imported, 'studentCode')
+    );
+    triggerHud(`นำเข้านักเรียน ${imported.length} คน`, performance.now() - t0);
+  };
+
+  // Teachers CRUD + Bulk
+  const handleAddTeacher = (teacher: Teacher) => {
+    const t0 = performance.now();
+    setTeachers((prev) => [teacher, ...prev]);
+    triggerHud(`เพิ่มครู ${teacher.teacherCode}`, performance.now() - t0);
+  };
+
+  const handleUpdateTeacher = (teacher: Teacher) => {
+    const t0 = performance.now();
+    setTeachers((prev) => prev.map((t) => (t.id === teacher.id ? teacher : t)));
+    triggerHud(`อัปเดตครู ${teacher.teacherCode}`, performance.now() - t0);
+  };
+
+  const handleDeleteTeacher = (teacherId: string) => {
+    const t0 = performance.now();
+    setTeachers((prev) => prev.filter((t) => t.id !== teacherId));
+    triggerHud('ลบรายชื่อครูแล้ว', performance.now() - t0);
+  };
+
+  const handleBulkAddTeachers = (added: Teacher[]) => {
+    const t0 = performance.now();
+    setTeachers((prev) => mergeByKey(prev, added, 'teacherCode'));
+    triggerHud(`เพิ่มครู ${added.length} คนสำเร็จ`, performance.now() - t0);
+  };
+
+  const handleBulkUpdateTeachers = (updatedList: Teacher[]) => {
+    const t0 = performance.now();
+    const map = new Map(updatedList.map((t) => [t.id, t]));
+    setTeachers((prev) => prev.map((t) => map.get(t.id) ?? t));
+    triggerHud(`อัปเดตครู ${updatedList.length} คนแล้ว`, performance.now() - t0);
+  };
+
+  const handleBulkDeleteTeachers = (teacherIds: string[]) => {
+    const t0 = performance.now();
+    const set = new Set(teacherIds);
+    setTeachers((prev) => prev.filter((t) => !set.has(t.id)));
+    triggerHud(`ลบครู ${teacherIds.length} คนแล้ว`, performance.now() - t0);
+  };
+
+  const handleImportTeachers = (
+    imported: Teacher[],
+    mode: 'merge' | 'replace'
+  ) => {
+    const t0 = performance.now();
+    setTeachers((prev) =>
+      mode === 'replace'
+        ? imported
+        : mergeByKey(prev, imported, 'teacherCode')
+    );
+    triggerHud(`นำเข้าครู HRMS ${imported.length} คน`, performance.now() - t0);
+  };
+
+  // Subjects CRUD + Bulk
+  const handleAddSubject = (subject: Subject) => {
+    const t0 = performance.now();
+    setSubjects((prev) => [subject, ...prev]);
+    triggerHud(`เพิ่มวิชา ${subject.subjectCode}`, performance.now() - t0);
+  };
+
+  const handleUpdateSubject = (subject: Subject) => {
+    const t0 = performance.now();
+    setSubjects((prev) => prev.map((s) => (s.id === subject.id ? subject : s)));
+    triggerHud(`อัปเดตวิชา ${subject.subjectCode}`, performance.now() - t0);
+  };
+
+  const handleDeleteSubject = (subjectId: string) => {
+    const t0 = performance.now();
+    setSubjects((prev) => prev.filter((s) => s.id !== subjectId));
+    triggerHud('ลบรายวิชาแล้ว', performance.now() - t0);
+  };
+
+  const handleBulkAddSubjects = (added: Subject[]) => {
+    const t0 = performance.now();
+    setSubjects((prev) => mergeByKey(prev, added, 'subjectCode'));
+    triggerHud(`เพิ่มรายวิชา ${added.length} วิชาสำเร็จ`, performance.now() - t0);
+  };
+
+  const handleBulkUpdateSubjects = (updatedList: Subject[]) => {
+    const t0 = performance.now();
+    const map = new Map(updatedList.map((s) => [s.id, s]));
+    setSubjects((prev) => prev.map((s) => map.get(s.id) ?? s));
+    triggerHud(`อัปเดตวิชา ${updatedList.length} วิชาแล้ว`, performance.now() - t0);
+  };
+
+  const handleBulkDeleteSubjects = (subjectIds: string[]) => {
+    const t0 = performance.now();
+    const set = new Set(subjectIds);
+    setSubjects((prev) => prev.filter((s) => !set.has(s.id)));
+    triggerHud(`ลบรายวิชา ${subjectIds.length} วิชาแล้ว`, performance.now() - t0);
+  };
+
+  const handleImportSubjects = (
+    imported: Subject[],
+    mode: 'merge' | 'replace'
+  ) => {
+    const t0 = performance.now();
+    setSubjects((prev) =>
+      mode === 'replace'
+        ? imported
+        : mergeByKey(prev, imported, 'subjectCode')
+    );
+    triggerHud(`นำเข้ารายวิชา ${imported.length} วิชา`, performance.now() - t0);
+  };
+
+  // Full System Backup & Multi-Entity JSON Import
+  const handleRestoreBackup = (
+    backup: SystemBackupPayload,
+    mode: 'merge' | 'replace'
+  ) => {
+    const t0 = performance.now();
+    if (mode === 'replace') {
+      setStudents(backup.students);
+      setTeachers(backup.teachers);
+      setSubjects(backup.subjects);
+      if (backup.quizzes.length > 0) {
+        setQuizzes(backup.quizzes);
+        setActiveQuizId(backup.activeQuizId || backup.quizzes[0].id);
+      }
+      setScans(backup.scans);
+      setSettings(sanitizeSystemSettings(backup.settings));
+    } else {
+      if (backup.students.length > 0) {
+        setStudents((prev) => mergeByKey(prev, backup.students, 'studentCode'));
+      }
+      if (backup.teachers.length > 0) {
+        setTeachers((prev) => mergeByKey(prev, backup.teachers, 'teacherCode'));
+      }
+      if (backup.subjects.length > 0) {
+        setSubjects((prev) => mergeByKey(prev, backup.subjects, 'subjectCode'));
+      }
+      if (backup.quizzes.length > 0) {
+        setQuizzes((prev) => mergeByKey(prev, backup.quizzes, 'id'));
+      }
+      if (backup.scans.length > 0) {
+        setScans((prev) => mergeByKey(prev, backup.scans, 'id'));
+      }
+      setSettings(sanitizeSystemSettings(backup.settings));
+    }
+    triggerHud('กู้คืนข้อมูลทั้งระบบเรียบร้อย', performance.now() - t0);
+  };
+
+  const handleApplyJsonImport = (
+    result: AutoJsonImportResult,
+    mode: 'merge' | 'replace'
+  ) => {
+    const t0 = performance.now();
+    if (result.students.length > 0) {
+      handleImportStudents(result.students, mode);
+    }
+    if (result.teachers.length > 0) {
+      handleImportTeachers(result.teachers, mode);
+    }
+    if (result.subjects.length > 0) {
+      handleImportSubjects(result.subjects, mode);
+    }
+    triggerHud('นำเข้าข้อมูล JSON สำเร็จ', performance.now() - t0);
   };
 
   const handleResetDemoData = () => {
     const t0 = performance.now();
     setStudents(SEED_STUDENTS);
+    setTeachers(SEED_TEACHERS);
+    setSubjects(SEED_SUBJECTS);
     setQuizzes(SEED_QUIZZES);
     setScans(SEED_SCANS);
     setActiveQuizId(SEED_QUIZZES[0].id);
+    setSettings(DEFAULT_SYSTEM_SETTINGS);
     setInspectedScanId(null);
     triggerHud('รีเซ็ตข้อมูลตัวอย่างสำเร็จ', performance.now() - t0);
   };
@@ -409,14 +713,16 @@ export default function App() {
           </div>
         </header>
 
-        {/* Mobile Quick Links for secondary pages (Sheets & Classes) */}
+        {/* Mobile Quick Links */}
         <div className="no-print flex items-center gap-2 overflow-x-auto border-b border-slate-200 bg-white px-4 py-2 md:hidden dark:border-slate-800 dark:bg-slate-900">
           {(
             [
               ['sheets', 'พิมพ์กระดาษ OMR'],
-              ['classes', 'ชั้นเรียนและนักเรียน'],
+              ['classes', 'นักเรียน · ครู · วิชา'],
               ['quizzes', 'ชุดข้อสอบและเฉลย'],
               ['analysis', 'วิเคราะห์ข้อสอบ'],
+              ['settings', 'ตั้งค่า & นำเข้า/ส่งออก'],
+              ['guide', 'คู่มือ'],
             ] as Array<[AppView, string]>
           ).map(([viewId, label]) => (
             <button
@@ -440,10 +746,12 @@ export default function App() {
               activeQuiz={activeQuiz}
               scans={activeQuizScans}
               students={students}
+              settings={settings}
               summary={summary}
               itemStats={itemStats}
               onNavigate={setActiveView}
               onDeleteScan={handleDeleteScan}
+              onBulkDeleteScans={handleBulkDeleteScans}
               onInspectScan={(scanId) => {
                 setInspectedScanId(scanId);
                 setActiveView('scanner');
@@ -456,10 +764,13 @@ export default function App() {
               activeQuiz={activeQuiz}
               students={students}
               scans={activeQuizScans}
+              settings={settings}
               inspectedScanId={inspectedScanId}
               onSaveScan={handleSaveScan}
               onUpdateScanAnswer={handleUpdateScanAnswer}
               onReassignStudent={handleReassignScanStudent}
+              onVerifyScanStudentCode={handleVerifyScanStudentCode}
+              onQuickAddStudent={handleAddStudent}
               onDeleteScan={handleDeleteScan}
               onSelectInspectedScan={setInspectedScanId}
               onBenchmark={triggerHud}
@@ -469,6 +780,8 @@ export default function App() {
           {activeView === 'quizzes' && (
             <QuizzesView
               quizzes={quizzes}
+              subjects={subjects}
+              settings={settings}
               activeQuizId={activeQuiz.id}
               onSelectQuiz={setActiveQuizId}
               onCreateQuiz={handleCreateQuiz}
@@ -482,6 +795,8 @@ export default function App() {
             <AnswerSheetView
               activeQuiz={activeQuiz}
               students={students}
+              settings={settings}
+              onQuickAddStudent={handleAddStudent}
               onBenchmark={triggerHud}
             />
           )}
@@ -490,6 +805,8 @@ export default function App() {
             <ItemAnalysisView
               activeQuiz={activeQuiz}
               scans={activeQuizScans}
+              students={students}
+              settings={settings}
               itemStats={itemStats}
               summary={summary}
               onBenchmark={triggerHud}
@@ -499,10 +816,49 @@ export default function App() {
           {activeView === 'classes' && (
             <ClassesView
               students={students}
+              teachers={teachers}
+              subjects={subjects}
+              settings={settings}
               onAddStudent={handleAddStudent}
               onUpdateStudent={handleUpdateStudent}
               onDeleteStudent={handleDeleteStudent}
-              onBulkImportStudents={handleBulkImportStudents}
+              onBulkAddStudents={handleBulkAddStudents}
+              onBulkUpdateStudents={handleBulkUpdateStudents}
+              onBulkDeleteStudents={handleBulkDeleteStudents}
+              onImportStudents={handleImportStudents}
+              onAddTeacher={handleAddTeacher}
+              onUpdateTeacher={handleUpdateTeacher}
+              onDeleteTeacher={handleDeleteTeacher}
+              onBulkAddTeachers={handleBulkAddTeachers}
+              onBulkUpdateTeachers={handleBulkUpdateTeachers}
+              onBulkDeleteTeachers={handleBulkDeleteTeachers}
+              onImportTeachers={handleImportTeachers}
+              onAddSubject={handleAddSubject}
+              onUpdateSubject={handleUpdateSubject}
+              onDeleteSubject={handleDeleteSubject}
+              onBulkAddSubjects={handleBulkAddSubjects}
+              onBulkUpdateSubjects={handleBulkUpdateSubjects}
+              onBulkDeleteSubjects={handleBulkDeleteSubjects}
+              onImportSubjects={handleImportSubjects}
+            />
+          )}
+
+          {activeView === 'settings' && (
+            <SettingsView
+              settings={settings}
+              onUpdateSettings={setSettings}
+              onResetSettings={() => setSettings(DEFAULT_SYSTEM_SETTINGS)}
+              students={students}
+              teachers={teachers}
+              subjects={subjects}
+              quizzes={quizzes}
+              scans={scans}
+              activeQuiz={activeQuiz}
+              activeQuizScans={activeQuizScans}
+              summary={summary}
+              onRestoreBackup={handleRestoreBackup}
+              onApplyJsonImport={handleApplyJsonImport}
+              onBenchmark={triggerHud}
             />
           )}
 

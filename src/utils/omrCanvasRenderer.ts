@@ -3,6 +3,7 @@ import {
   type BubbleReadStatus,
   type ChoiceOption,
   type Quiz,
+  type StudentIdDigits,
 } from '../types/omr';
 import {
   buildCanonicalToImageHomography,
@@ -23,16 +24,22 @@ export function drawPrintableOmrSheet(
     quiz: Quiz;
     studentCode?: string;
     studentName?: string;
+    studentIdDigits?: StudentIdDigits;
     prefillAnswers?: Record<number, ChoiceOption | ChoiceOption[] | null>;
     schoolName?: string;
+    academicYear?: string;
+    semester?: string;
   }
 ): void {
   const {
     quiz,
     studentCode = '',
     studentName = '',
+    studentIdDigits = 4,
     prefillAnswers = {},
     schoolName = 'โรงเรียนสาธิตมาตรฐานสากล · GradeScan OMR',
+    academicYear,
+    semester,
   } = options;
 
   const width = 800;
@@ -43,7 +50,7 @@ export function drawPrintableOmrSheet(
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
-  const spec = getOmrLayoutSpec(quiz.questionCount, quiz.choiceCount);
+  const spec = getOmrLayoutSpec(quiz.questionCount, quiz.choiceCount, studentIdDigits);
 
   // Clean paper white background
   ctx.fillStyle = '#FFFFFF';
@@ -72,22 +79,28 @@ export function drawPrintableOmrSheet(
   // Header metadata block (left side, cleanly clear of TL/TR markers and ID block)
   const boxX = width * 0.1;
   const boxY = height * 0.085;
-  const boxW = width * 0.42;
+  const boxW = width * 0.41;
   const boxH = height * 0.185;
 
   ctx.strokeStyle = '#CBD5E1';
   ctx.lineWidth = 1.5;
   ctx.strokeRect(boxX, boxY, boxW, boxH);
 
+  const maxTextW = boxW - 24;
+
   ctx.fillStyle = '#0F172A';
   ctx.font = '700 15px "Noto Sans Thai", "Plus Jakarta Sans", sans-serif';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
-  ctx.fillText('กระดาษคำตอบปรนัย (OMR Answer Sheet)', boxX + 12, boxY + 12);
+  ctx.fillText('กระดาษคำตอบปรนัย (OMR Answer Sheet)', boxX + 12, boxY + 12, maxTextW);
 
+  const termInfo =
+    academicYear && semester
+      ? ` · ภาค ${semester}/${academicYear}`
+      : '';
   ctx.fillStyle = '#475569';
-  ctx.font = '500 12px "Noto Sans Thai", "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(schoolName, boxX + 12, boxY + 34);
+  ctx.font = '500 10.5px "Noto Sans Thai", "Plus Jakarta Sans", sans-serif';
+  ctx.fillText(`${schoolName}${termInfo}`, boxX + 12, boxY + 35, maxTextW);
 
   ctx.strokeStyle = '#E2E8F0';
   ctx.beginPath();
@@ -96,25 +109,28 @@ export function drawPrintableOmrSheet(
   ctx.stroke();
 
   ctx.fillStyle = '#0F172A';
-  ctx.font = '600 12.5px "Noto Sans Thai", "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(`ชุดข้อสอบ: ${quiz.title.slice(0, 26)}`, boxX + 12, boxY + 64);
+  ctx.font = '600 12px "Noto Sans Thai", "Plus Jakarta Sans", sans-serif';
+  ctx.fillText(`ชุดข้อสอบ: ${quiz.title}`, boxX + 12, boxY + 64, maxTextW);
 
   ctx.fillStyle = '#334155';
-  ctx.font = '400 11.5px "Noto Sans Thai", "Plus Jakarta Sans", sans-serif';
+  ctx.font = '400 11px "Noto Sans Thai", "Plus Jakarta Sans", sans-serif';
   ctx.fillText(
     `วิชา: ${quiz.subject} · ${quiz.questionCount} ข้อ (${quiz.choiceCount} ตัวเลือก)`,
     boxX + 12,
-    boxY + 86
+    boxY + 86,
+    maxTextW
   );
   ctx.fillText(
-    `ชื่อ-สกุล: ${(studentName || '.......................................').slice(0, 34)}`,
+    `ชื่อ-สกุล: ${studentName || '.......................................'}`,
     boxX + 12,
-    boxY + 110
+    boxY + 110,
+    maxTextW
   );
   ctx.fillText(
-    `ห้องเรียน: ${quiz.className.slice(0, 22)}   รหัส: ${studentCode || '______'}`,
+    `ห้องเรียน: ${quiz.className}   รหัส: ${studentCode || '______'}`,
     boxX + 12,
-    boxY + 132
+    boxY + 132,
+    maxTextW
   );
   ctx.fillStyle = '#64748B';
   ctx.font = '400 10px "Noto Sans Thai", sans-serif';
@@ -130,9 +146,9 @@ export function drawPrintableOmrSheet(
   );
 
   // Student ID Bubble Grid (right side of header)
-  const idBoxX = width * 0.54;
+  const idBoxX = width * 0.53;
   const idBoxY = height * 0.072;
-  const idBoxW = width * 0.36;
+  const idBoxW = width * 0.37;
   const idBoxH = height * 0.205;
 
   ctx.strokeStyle = '#CBD5E1';
@@ -142,9 +158,16 @@ export function drawPrintableOmrSheet(
   ctx.fillStyle = '#0F172A';
   ctx.font = '600 12px "Noto Sans Thai", sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText('รหัสประจำตัวนักเรียน (4 หลัก)', idBoxX + idBoxW / 2, idBoxY + 8);
+  ctx.fillText(
+    `รหัสประจำตัวนักเรียน (${spec.studentIdDigits} หลัก)`,
+    idBoxX + idBoxW / 2,
+    idBoxY + 8
+  );
 
-  const paddedId = studentCode ? studentCode.padStart(4, '0').slice(0, 4) : '';
+  const cleanDigits = studentCode.replace(/\D/g, '');
+  const paddedId = cleanDigits
+    ? cleanDigits.padStart(spec.studentIdDigits, '0').slice(-spec.studentIdDigits)
+    : '';
   for (let col = 0; col < spec.studentIdDigits; col++) {
     const firstCoord = spec.idBubbles[col][0];
     const cx = firstCoord.u * width;

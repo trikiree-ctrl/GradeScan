@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
@@ -5,7 +6,10 @@ import {
   BarChart2,
   Camera,
   CheckCircle2,
+  Download,
   FileCheck2,
+  FileJson,
+  FileSpreadsheet,
   Printer,
   ShieldCheck,
   Trash2,
@@ -17,17 +21,22 @@ import type {
   QuizSummaryStats,
   ScannedSheet,
   Student,
+  SystemSettings,
 } from '../types/omr';
-import { formatThaiDateTime } from '../utils/normalization';
+import { exportPostScanScoresJson } from '../utils/importExport';
+import { exportScansToCsv, formatThaiDateTime } from '../utils/normalization';
+import { computeThaiGrade } from '../utils/systemSettings';
 
 interface DashboardViewProps {
   activeQuiz: Quiz;
   scans: ScannedSheet[];
   students: Student[];
+  settings: SystemSettings;
   summary: QuizSummaryStats;
   itemStats: ItemAnalysisStat[];
   onNavigate: (view: AppView) => void;
   onDeleteScan: (scanId: string) => void;
+  onBulkDeleteScans: (scanIds: string[]) => void;
   onInspectScan: (scanId: string) => void;
 }
 
@@ -35,13 +44,17 @@ export function DashboardView({
   activeQuiz,
   scans,
   students,
+  settings,
   summary,
   itemStats,
   onNavigate,
   onDeleteScan,
+  onBulkDeleteScans,
   onInspectScan,
 }: DashboardViewProps) {
-  // Build 5 score percentage buckets with vibrant semantic gradient colors
+  const [selectedScanIds, setSelectedScanIds] = useState<Set<string>>(new Set());
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
   const buckets = [
     { label: '0–39%', min: 0, max: 39.99, count: 0, barColor: 'bg-rose-500 dark:bg-rose-500' },
     { label: '40–49%', min: 40, max: 49.99, count: 0, barColor: 'bg-amber-500 dark:bg-amber-400' },
@@ -62,6 +75,68 @@ export function DashboardView({
     .slice(0, 4);
 
   const maxPossible = activeQuiz.questionCount * activeQuiz.pointsPerQuestion;
+  const passThreshold = activeQuiz.passThresholdPct ?? settings.defaultPassThresholdPct;
+  const studentCodeSet = new Set(students.map((s) => s.studentCode));
+
+  const allSelected = scans.length > 0 && scans.every((s) => selectedScanIds.has(s.id));
+
+  const toggleSelectAll = () => {
+    if (allSelected) {
+      setSelectedScanIds(new Set());
+      setConfirmDelete(false);
+    } else {
+      setSelectedScanIds(new Set(scans.map((s) => s.id)));
+    }
+  };
+
+  const toggleOne = (id: string) => {
+    setSelectedScanIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+    setConfirmDelete(false);
+  };
+
+  const handleExportCsv = () => {
+    const csv = exportScansToCsv(activeQuiz, scans, { settings, students });
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `scores_${activeQuiz.id}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportExcel = () => {
+    const rowsHtml = scans
+      .map((s) => {
+        const g = computeThaiGrade(s.percentage, settings.gradeCutoffs);
+        return `<tr><td>${s.detectedStudentCode}</td><td>${s.studentName}</td><td>${s.className}</td><td>${s.score}</td><td>${s.maxScore}</td><td>${s.percentage.toFixed(1)}%</td><td>${g}</td></tr>`;
+      })
+      .join('');
+    const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="UTF-8" /></head><body><table><thead><tr><th>รหัส</th><th>ชื่อ-สกุล</th><th>ห้องเรียน</th><th>คะแนน</th><th>เต็ม</th><th>ร้อยละ</th><th>เกรด</th></tr></thead><tbody>${rowsHtml}</tbody></table></body></html>`;
+    const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `scores_${activeQuiz.id}.xls`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportJson = () => {
+    const json = exportPostScanScoresJson(activeQuiz, scans, students, summary, settings);
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `scores_${activeQuiz.id}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="space-y-6">
@@ -70,7 +145,7 @@ export function DashboardView({
         <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
           <div className="space-y-1.5">
             <div className="flex flex-wrap items-center gap-2 text-xs text-blue-100 font-medium">
-              <span>ชุดข้อสอบที่กำลังใช้งาน</span>
+              <span>{settings.schoolName}</span>
               <span aria-hidden="true">·</span>
               <span>{activeQuiz.subject}</span>
               <span aria-hidden="true">·</span>
@@ -107,7 +182,7 @@ export function DashboardView({
         </div>
       </section>
 
-      {/* 4 KPI Summary Strip with Vibrant Category Icon Accents */}
+      {/* 4 KPI Summary Strip */}
       <section aria-label="ตัวชี้วัดหลัก" className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
           <div className="flex items-center justify-between">
@@ -122,7 +197,7 @@ export function DashboardView({
             {summary.totalScanned} แผ่น
           </p>
           <p className="mt-1 text-xs text-emerald-700 dark:text-emerald-400 font-medium">
-            ผ่านเกณฑ์ (≥50%) {summary.passCount} คน · {summary.passRate.toFixed(0)}%
+            ผ่านเกณฑ์ (≥{passThreshold}%) {summary.passCount} คน · {summary.passRate.toFixed(0)}%
           </p>
         </div>
 
@@ -287,20 +362,81 @@ export function DashboardView({
         </div>
       </section>
 
-      {/* Recent Scanned Papers Table */}
+      {/* Recent Scanned Papers Table with Multi-Select Bulk Delete & Quick Score Export */}
       <section className="rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex flex-col gap-2 border-b border-slate-200 px-6 py-4 sm:flex-row sm:items-center sm:justify-between dark:border-slate-800">
+        <div className="flex flex-col gap-3 border-b border-slate-200 px-6 py-4 lg:flex-row lg:items-center lg:justify-between dark:border-slate-800">
           <div>
             <h2 className="text-base font-semibold text-slate-900 dark:text-white">
-              ผลการตรวจกระดาษคำตอบล่าสุด
+              ผลการตรวจกระดาษคำตอบล่าสุด ({scans.length} รายการ)
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              แตะที่รายชื่อเพื่อดูคำตอบรายข้อหรือแก้ไขรอยฝนที่อ่านผิดพลาด
+              แตะรายชื่อเพื่อแก้ไขรายข้อ หรือติ๊กเลือกหลายแผ่นเพื่อลบพร้อมกัน และส่งออกคะแนนหลังตรวจได้ทันที
             </p>
           </div>
-          <span className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
-            ทั้งหมด {scans.length} รายการ
-          </span>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {selectedScanIds.size > 0 && (
+              !confirmDelete ? (
+                <button
+                  type="button"
+                  onClick={() => setConfirmDelete(true)}
+                  className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700"
+                >
+                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>ลบผลตรวจที่เลือก ({selectedScanIds.size})</span>
+                </button>
+              ) : (
+                <div className="flex items-center gap-1.5 rounded-lg border border-rose-300 bg-rose-50 px-2.5 py-1 dark:border-rose-800 dark:bg-rose-950/60">
+                  <span className="text-xs font-semibold text-rose-800 dark:text-rose-200">
+                    ยืนยันลบ {selectedScanIds.size} แผ่น?
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onBulkDeleteScans(Array.from(selectedScanIds));
+                      setSelectedScanIds(new Set());
+                      setConfirmDelete(false);
+                    }}
+                    className="rounded bg-rose-600 px-2 py-0.5 text-xs font-semibold text-white hover:bg-rose-700"
+                  >
+                    ยืนยัน
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDelete(false)}
+                    className="rounded bg-white px-2 py-0.5 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  >
+                    ยกเลิก
+                  </button>
+                </div>
+              )
+            )}
+
+            <button
+              type="button"
+              onClick={handleExportCsv}
+              className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 whitespace-nowrap"
+            >
+              <Download className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>CSV</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleExportExcel}
+              className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 whitespace-nowrap"
+            >
+              <FileSpreadsheet className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Excel</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleExportJson}
+              className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 whitespace-nowrap"
+            >
+              <FileJson className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>JSON</span>
+            </button>
+          </div>
         </div>
 
         {scans.length === 0 ? (
@@ -322,11 +458,23 @@ export function DashboardView({
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50/70 text-xs font-medium text-slate-500 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-400">
-                  <th className="px-6 py-3">รหัส</th>
+                  <th className="w-10 px-4 py-3">
+                    <input
+                      type="checkbox"
+                      aria-label="เลือกผลสแกนทั้งหมด"
+                      checked={allSelected}
+                      onChange={toggleSelectAll}
+                      className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600"
+                    />
+                  </th>
+                  <th className="px-4 py-3">รหัส</th>
                   <th className="px-4 py-3">ชื่อ-นามสกุล</th>
                   <th className="hidden sm:table-cell px-4 py-3">ห้องเรียน</th>
                   <th className="px-4 py-3 text-right">คะแนน</th>
                   <th className="px-4 py-3 text-right">ร้อยละ</th>
+                  {settings.useThai8GradeScale && (
+                    <th className="px-3 py-3 text-center">เกรด</th>
+                  )}
                   <th className="hidden md:table-cell px-4 py-3">สถานะการอ่าน</th>
                   <th className="hidden lg:table-cell px-4 py-3">เวลาตรวจ</th>
                   <th className="px-6 py-3 text-right">จัดการ</th>
@@ -334,14 +482,33 @@ export function DashboardView({
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {scans.map((scan) => {
-                  const passed = scan.percentage >= 50;
+                  const passed = scan.percentage >= passThreshold;
+                  const dbMatched = studentCodeSet.has(scan.detectedStudentCode);
+                  const isChecked = selectedScanIds.has(scan.id);
+                  const thaiGrade = computeThaiGrade(scan.percentage, settings.gradeCutoffs);
                   return (
                     <tr
                       key={scan.id}
-                      className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors"
+                      className={`hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors ${
+                        isChecked ? 'bg-indigo-50/40 dark:bg-indigo-950/20' : ''
+                      }`}
                     >
-                      <td className="px-6 py-3 font-mono tabular-nums text-xs font-semibold text-indigo-600 dark:text-indigo-400">
+                      <td className="px-4 py-3">
+                        <input
+                          type="checkbox"
+                          aria-label={`เลือกผลตรวจ ${scan.studentName}`}
+                          checked={isChecked}
+                          onChange={() => toggleOne(scan.id)}
+                          className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600"
+                        />
+                      </td>
+                      <td className="px-4 py-3 font-mono tabular-nums text-xs font-semibold text-indigo-600 dark:text-indigo-400">
                         {scan.detectedStudentCode}
+                        {!dbMatched && (
+                          <span className="ml-1 text-[10px] font-sans font-normal text-amber-600 dark:text-amber-400">
+                            (นอกฐานข้อมูล)
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">
                         <button
@@ -369,6 +536,11 @@ export function DashboardView({
                           {scan.percentage.toFixed(1)}%
                         </span>
                       </td>
+                      {settings.useThai8GradeScale && (
+                        <td className="px-3 py-3 text-center font-mono tabular-nums text-xs font-semibold text-slate-800 dark:text-slate-100">
+                          {thaiGrade}
+                        </td>
+                      )}
                       <td className="hidden md:table-cell px-4 py-3 text-xs text-slate-600 dark:text-slate-300">
                         ถูก {scan.correctCount} · ผิด {scan.incorrectCount}
                         {scan.blankCount > 0 ? ` · เว้น ${scan.blankCount}` : ''}
@@ -398,3 +570,4 @@ export function DashboardView({
     </div>
   );
 }
+

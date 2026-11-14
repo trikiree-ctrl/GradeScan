@@ -1,4 +1,5 @@
-import type { Quiz, ScannedSheet, Student } from '../types/omr';
+import type { Quiz, ScannedSheet, Student, SystemSettings } from '../types/omr';
+import { computeThaiGrade, DEFAULT_GRADE_CUTOFFS } from './systemSettings';
 
 /**
  * Normalizes Thai classroom names into a consistent standard format.
@@ -87,14 +88,33 @@ function escapeCsvCell(value: string | number): string {
 /**
  * Exports scanned grades to UTF-8 BOM CSV compatible with Microsoft Excel (Thai characters preserved).
  */
-export function exportScansToCsv(quiz: Quiz, scans: ScannedSheet[]): string {
+export function exportScansToCsv(
+  quiz: Quiz,
+  scans: ScannedSheet[],
+  options?: {
+    settings?: SystemSettings;
+    students?: Student[];
+  }
+): string {
+  const settings = options?.settings;
+  const studentSet = options?.students
+    ? new Set(options.students.map((s) => s.studentCode))
+    : null;
+  const includeGrade = settings?.csvIncludeGradeLevel ?? true;
+  const includeItems = settings?.csvIncludeItemBreakdown ?? true;
+  const passThreshold = quiz.passThresholdPct ?? settings?.defaultPassThresholdPct ?? 50;
+  const cutoffs = settings?.gradeCutoffs ?? DEFAULT_GRADE_CUTOFFS;
+
   const headerCols = [
     'รหัสนักเรียน',
     'ชื่อ-นามสกุล',
     'ห้องเรียน',
+    ...(studentSet ? ['สถานะฐานข้อมูล'] : []),
     'คะแนนที่ได้',
     'คะแนนเต็ม',
     'ร้อยละ (%)',
+    'ผลการประเมิน',
+    ...(includeGrade ? ['เกรด (0-4)'] : []),
     'ตอบถูก',
     'ตอบผิด',
     'ไม่ตอบ',
@@ -102,20 +122,31 @@ export function exportScansToCsv(quiz: Quiz, scans: ScannedSheet[]): string {
     'เวลาสแกน',
   ];
 
-  for (let q = 1; q <= quiz.questionCount; q++) {
-    headerCols.push(`ข้อ ${q}`);
+  if (includeItems) {
+    for (let q = 1; q <= quiz.questionCount; q++) {
+      headerCols.push(`ข้อ ${q}`);
+    }
   }
 
   const rows: string[] = [headerCols.map(escapeCsvCell).join(',')];
 
   for (const scan of scans) {
+    const passed = scan.percentage >= passThreshold ? 'ผ่าน' : 'ไม่ผ่าน';
+    const dbStatus = studentSet
+      ? studentSet.has(scan.detectedStudentCode)
+        ? 'ตรงฐานข้อมูล'
+        : 'ไม่พบรหัส'
+      : '';
     const baseCols: Array<string | number> = [
       scan.detectedStudentCode,
       scan.studentName,
       scan.className,
+      ...(studentSet ? [dbStatus] : []),
       scan.score,
       scan.maxScore,
       scan.percentage.toFixed(1),
+      passed,
+      ...(includeGrade ? [computeThaiGrade(scan.percentage, cutoffs)] : []),
       scan.correctCount,
       scan.incorrectCount,
       scan.blankCount,
@@ -123,15 +154,17 @@ export function exportScansToCsv(quiz: Quiz, scans: ScannedSheet[]): string {
       formatThaiDateTime(scan.scannedAt),
     ];
 
-    for (let q = 1; q <= quiz.questionCount; q++) {
-      const ans = scan.answers[q];
-      const status = scan.statuses[q];
-      if (status === 'multiple') {
-        baseCols.push('MULTI');
-      } else if (!ans || status === 'blank') {
-        baseCols.push('-');
-      } else {
-        baseCols.push(ans);
+    if (includeItems) {
+      for (let q = 1; q <= quiz.questionCount; q++) {
+        const ans = scan.answers[q];
+        const status = scan.statuses[q];
+        if (status === 'multiple') {
+          baseCols.push('MULTI');
+        } else if (!ans || status === 'blank') {
+          baseCols.push('-');
+        } else {
+          baseCols.push(ans);
+        }
       }
     }
 
@@ -144,7 +177,10 @@ export function exportScansToCsv(quiz: Quiz, scans: ScannedSheet[]): string {
 /**
  * Parses CSV or tab-separated student roster text into normalized Student drafts.
  */
-export function parseStudentCsv(rawText: string): Array<Omit<Student, 'id' | 'createdAt'>> {
+export function parseStudentCsv(
+  rawText: string,
+  targetDigits: 4 | 5 | 6 = 4
+): Array<Omit<Student, 'id' | 'createdAt'>> {
   const lines = rawText
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -160,7 +196,11 @@ export function parseStudentCsv(rawText: string): Array<Omit<Student, 'id' | 'cr
     const first = parts[0].replace(/^"|"$/g, '').trim();
     if (i === 0 && /รหัส|code|id/i.test(first)) continue;
 
-    const studentCode = first.padStart(4, '0').slice(0, 4);
+    const digitsOnly = first.replace(/\D/g, '');
+    const studentCode =
+      digitsOnly.length <= targetDigits
+        ? digitsOnly.padStart(targetDigits, '0')
+        : digitsOnly.slice(0, 6);
     const fullName = (parts[1] ?? '').replace(/^"|"$/g, '').trim();
     const rawClass = (parts[2] ?? 'มัธยมศึกษาปีที่ 1/1').replace(/^"|"$/g, '').trim();
     const numberInClass = Number.parseInt((parts[3] ?? '').trim(), 10) || results.length + 1;
@@ -172,6 +212,7 @@ export function parseStudentCsv(rawText: string): Array<Omit<Student, 'id' | 'cr
       fullName,
       className: normalizeThaiClassName(rawClass),
       numberInClass,
+      sourceSystem: 'csv',
     });
   }
 

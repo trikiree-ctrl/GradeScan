@@ -1,18 +1,24 @@
 import { useState } from 'react';
-import { Download, FileSpreadsheet, Printer } from 'lucide-react';
+import { Download, FileJson, FileSpreadsheet, Printer } from 'lucide-react';
 import type {
   ItemAnalysisStat,
   ItemQualityLevel,
   Quiz,
   QuizSummaryStats,
   ScannedSheet,
+  Student,
+  SystemSettings,
 } from '../types/omr';
+import { exportPostScanScoresJson } from '../utils/importExport';
 import { exportScansToCsv } from '../utils/normalization';
 import { getActiveChoices } from '../utils/omrAnalytics';
+import { computeThaiGrade } from '../utils/systemSettings';
 
 interface ItemAnalysisViewProps {
   activeQuiz: Quiz;
   scans: ScannedSheet[];
+  students: Student[];
+  settings: SystemSettings;
   itemStats: ItemAnalysisStat[];
   summary: QuizSummaryStats;
   onBenchmark: (label: string, ms: number) => void;
@@ -23,6 +29,8 @@ type QualityFilter = 'all' | 'ดีมาก' | 'เหมาะสม' | 'ค�
 export function ItemAnalysisView({
   activeQuiz,
   scans,
+  students,
+  settings,
   itemStats,
   summary,
   onBenchmark,
@@ -52,7 +60,7 @@ export function ItemAnalysisView({
 
   const handleExportCsv = () => {
     const t0 = performance.now();
-    const csv = exportScansToCsv(activeQuiz, scans);
+    const csv = exportScansToCsv(activeQuiz, scans, { settings, students });
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -66,12 +74,12 @@ export function ItemAnalysisView({
   const handleExportExcelHtml = () => {
     const t0 = performance.now();
     const rowsHtml = scans
-      .map(
-        (s) =>
-          `<tr><td>${s.detectedStudentCode}</td><td>${s.studentName}</td><td>${s.className}</td><td>${s.score}</td><td>${s.maxScore}</td><td>${s.percentage.toFixed(1)}%</td></tr>`
-      )
+      .map((s) => {
+        const grade = computeThaiGrade(s.percentage, settings.gradeCutoffs);
+        return `<tr><td>${s.detectedStudentCode}</td><td>${s.studentName}</td><td>${s.className}</td><td>${s.score}</td><td>${s.maxScore}</td><td>${s.percentage.toFixed(1)}%</td><td>${grade}</td></tr>`;
+      })
       .join('');
-    const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="UTF-8" /></head><body><table><thead><tr><th>รหัส</th><th>ชื่อ-สกุล</th><th>ห้องเรียน</th><th>คะแนน</th><th>เต็ม</th><th>ร้อยละ</th></tr></thead><tbody>${rowsHtml}</tbody></table></body></html>`;
+    const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="UTF-8" /></head><body><table><thead><tr><th>รหัส</th><th>ชื่อ-สกุล</th><th>ห้องเรียน</th><th>คะแนน</th><th>เต็ม</th><th>ร้อยละ</th><th>เกรด</th></tr></thead><tbody>${rowsHtml}</tbody></table></body></html>`;
     const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -80,6 +88,19 @@ export function ItemAnalysisView({
     a.click();
     URL.revokeObjectURL(url);
     onBenchmark('ส่งออกไฟล์ Excel (.xls)', Math.max(1, Math.round(performance.now() - t0)));
+  };
+
+  const handleExportScoresJson = () => {
+    const t0 = performance.now();
+    const json = exportPostScanScoresJson(activeQuiz, scans, students, summary, settings);
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `gradescan_scores_${activeQuiz.id}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    onBenchmark('ส่งออกคะแนนหลังตรวจ JSON', Math.max(1, Math.round(performance.now() - t0)));
   };
 
   const handleExportItemAnalysisCsv = () => {
@@ -200,6 +221,14 @@ export function ItemAnalysisView({
             >
               <FileSpreadsheet className="h-3.5 w-3.5" aria-hidden="true" />
               <span>ส่งออก Excel</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleExportScoresJson}
+              className="inline-flex min-h-[40px] items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 whitespace-nowrap"
+            >
+              <FileJson className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>ส่งออกคะแนน JSON</span>
             </button>
             <button
               type="button"

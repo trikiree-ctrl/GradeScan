@@ -9,6 +9,7 @@ import {
   Moon,
   Printer,
   RotateCcw,
+  Settings,
   Sun,
   Users,
 } from 'lucide-react';
@@ -35,7 +36,8 @@ const NAV_ITEMS: Array<{
   { id: 'quizzes', label: 'ชุดข้อสอบและเฉลย', icon: FileSpreadsheet },
   { id: 'sheets', label: 'กระดาษคำตอบ OMR', icon: Printer },
   { id: 'analysis', label: 'วิเคราะห์ข้อสอบ', icon: BarChart3 },
-  { id: 'classes', label: 'ชั้นเรียนและนักเรียน', icon: Users },
+  { id: 'classes', label: 'นักเรียน · ครู · วิชา', icon: Users },
+  { id: 'settings', label: 'ตั้งค่า & นำเข้า/ส่งออก', icon: Settings },
   { id: 'guide', label: 'คู่มือศึกษา ZipGrade', icon: BookOpenCheck },
 ];
 

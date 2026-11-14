@@ -5,8 +5,16 @@ import {
   type QuestionCount,
   type QuestionScanDetail,
   type Quiz,
+  type StudentIdDigits,
 } from '../types/omr';
 import { gradeResponse } from './omrAnalytics';
+
+export interface OmrScanOptions {
+  studentIdDigits?: StudentIdDigits;
+  bubbleFillThreshold?: number;
+  multiMarkGapThreshold?: number;
+  maxTiltAngleDeg?: number;
+}
 
 export interface PixelBuffer {
   width: number;
@@ -113,21 +121,25 @@ const MARKER_SIZE_V = 0.024;
  */
 export function getOmrLayoutSpec(
   questionCount: QuestionCount,
-  choiceCount: 4 | 5 = 4
+  choiceCount: 4 | 5 = 4,
+  studentIdDigits: StudentIdDigits = 4
 ): OmrLayoutSpec {
   const idBubbles: BubbleCoord[][] = [];
-  const idStartU = 0.57;
-  const idStepU = 0.044;
+  const idStartU =
+    studentIdDigits === 4 ? 0.61 : studentIdDigits === 5 ? 0.595 : 0.585;
+  const idStepU =
+    studentIdDigits === 4 ? 0.054 : studentIdDigits === 5 ? 0.048 : 0.043;
+  const idRadiusU = studentIdDigits === 6 ? 0.0112 : 0.012;
   const idStartV = 0.105;
   const idStepV = 0.0155;
 
-  for (let col = 0; col < 4; col++) {
+  for (let col = 0; col < studentIdDigits; col++) {
     const colBubbles: BubbleCoord[] = [];
     for (let digit = 0; digit <= 9; digit++) {
       colBubbles.push({
         u: idStartU + col * idStepU,
         v: idStartV + digit * idStepV,
-        rU: 0.012,
+        rU: idRadiusU,
       });
     }
     idBubbles.push(colBubbles);
@@ -193,7 +205,7 @@ export function getOmrLayoutSpec(
     markerMarginY: MARKER_MARGIN_Y,
     markerSizeU: MARKER_SIZE_U,
     markerSizeV: MARKER_SIZE_V,
-    studentIdDigits: 4,
+    studentIdDigits,
     idBubbles,
     questionBubbles,
   };
@@ -663,11 +675,13 @@ export function detectCornerMarkers(image: PixelBuffer): CornerMarkers {
  * from a camera or uploaded image buffer.
  */
 export function analyzeSheetAlignment(
-  image: PixelBuffer
+  image: PixelBuffer,
+  options?: Pick<OmrScanOptions, 'maxTiltAngleDeg'>
 ): SheetAlignmentAnalysis {
   const detection = detectCornerMarkersDetailed(image);
   const { corners, detectedCount, lightingStatus } = detection;
   const { width, height } = image;
+  const maxTiltDeg = options?.maxTiltAngleDeg ?? 10.5;
 
   const topDx = corners.tr.x - corners.tl.x;
   const topDy = corners.tr.y - corners.tl.y;
@@ -730,7 +744,7 @@ export function analyzeSheetAlignment(
     bottomWidth >= width * 0.48 &&
     leftHeight >= height * 0.48 &&
     rightHeight >= height * 0.48;
-  const angleOk = Math.abs(tiltAngleDeg) <= 10.5;
+  const angleOk = Math.abs(tiltAngleDeg) <= maxTiltDeg;
   const skewOk = perspectiveSkewPct <= 18 && aspectRatioErrorPct <= 24;
   const lightOk = lightingStatus === 'good';
 
@@ -832,10 +846,15 @@ function sampleBubbleDarkness(
  * Full Computer-Vision OMR Scanner: detects 4 fiducial corners, measures angle & alignment,
  * applies projective homography to sample local perspective-adjusted bubbles, grades, and benchmarks.
  */
-export function scanOmrImageData(image: PixelBuffer, quiz: Quiz): OmrScanResult {
+export function scanOmrImageData(
+  image: PixelBuffer,
+  quiz: Quiz,
+  options?: OmrScanOptions
+): OmrScanResult {
   const t0 = performance.now();
-  const spec = getOmrLayoutSpec(quiz.questionCount, quiz.choiceCount);
-  const alignment = analyzeSheetAlignment(image);
+  const idDigits: StudentIdDigits = options?.studentIdDigits ?? 4;
+  const spec = getOmrLayoutSpec(quiz.questionCount, quiz.choiceCount, idDigits);
+  const alignment = analyzeSheetAlignment(image, options);
   const corners = alignment.detection.corners;
   const H = buildCanonicalToImageHomography(corners);
 
@@ -913,8 +932,9 @@ export function scanOmrImageData(image: PixelBuffer, quiz: Quiz): OmrScanResult 
     const top = sorted[0];
     const second = sorted[1];
 
-    const MIN_FILL_DARKNESS = 0.28;
-    const MULTI_MARK_FLOOR = 0.27;
+    const MIN_FILL_DARKNESS = options?.bubbleFillThreshold ?? 0.28;
+    const MULTI_MARK_FLOOR = Math.max(0.18, MIN_FILL_DARKNESS - 0.01);
+    const MULTI_MARK_GAP = options?.multiMarkGapThreshold ?? 0.14;
 
     let detectedChoice: ChoiceOption | null = null;
     let status: BubbleReadStatus = 'blank';
@@ -927,7 +947,7 @@ export function scanOmrImageData(image: PixelBuffer, quiz: Quiz): OmrScanResult 
     } else if (
       second &&
       second.val >= MULTI_MARK_FLOOR &&
-      top.val - second.val < 0.14
+      top.val - second.val < MULTI_MARK_GAP
     ) {
       status = 'multiple';
       detectedChoice = null;
@@ -1016,6 +1036,7 @@ export function renderOmrPixelBuffer(options: {
   height: number;
   questionCount: QuestionCount;
   choiceCount: 4 | 5;
+  studentIdDigits?: StudentIdDigits;
   studentCode: string;
   answers: Record<number, ChoiceOption | ChoiceOption[] | null>;
   offsetX?: number;
@@ -1031,6 +1052,7 @@ export function renderOmrPixelBuffer(options: {
     height,
     questionCount,
     choiceCount,
+    studentIdDigits = 4,
     studentCode,
     answers,
     offsetX = 0,
@@ -1044,7 +1066,7 @@ export function renderOmrPixelBuffer(options: {
 
   const data = new Uint8ClampedArray(width * height * 4);
 
-  const spec = getOmrLayoutSpec(questionCount, choiceCount);
+  const spec = getOmrLayoutSpec(questionCount, choiceCount, studentIdDigits);
   const cosR = Math.cos(rotationRad);
   const sinR = Math.sin(rotationRad);
   const cx0 = width / 2;
@@ -1176,8 +1198,9 @@ export function renderOmrPixelBuffer(options: {
     paintRect(mu, mv, spec.markerSizeU, spec.markerSizeV, 12);
   }
 
-  const paddedCode = studentCode.padStart(4, '0').slice(0, 4);
-  for (let col = 0; col < 4; col++) {
+  const digits = spec.studentIdDigits;
+  const paddedCode = studentCode.replace(/\D/g, '').padStart(digits, '0').slice(-digits);
+  for (let col = 0; col < digits; col++) {
     const targetDigit = Number.parseInt(paddedCode[col] ?? '0', 10);
     for (let d = 0; d <= 9; d++) {
       paintBubble(spec.idBubbles[col][d], d === targetDigit);

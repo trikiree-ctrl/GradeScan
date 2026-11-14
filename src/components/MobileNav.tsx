@@ -1,9 +1,9 @@
 import {
   BarChart3,
-  BookOpenCheck,
   Camera,
   FileSpreadsheet,
   LayoutDashboard,
+  Settings,
 } from 'lucide-react';
 import type { AppView } from '../types/omr';
 
@@ -21,7 +21,7 @@ const MOBILE_ITEMS: Array<{
   { id: 'scanner', label: 'สแกน', icon: Camera },
   { id: 'quizzes', label: 'ชุดสอบ', icon: FileSpreadsheet },
   { id: 'analysis', label: 'วิเคราะห์', icon: BarChart3 },
-  { id: 'guide', label: 'คู่มือ', icon: BookOpenCheck },
+  { id: 'settings', label: 'ตั้งค่า', icon: Settings },
 ];
 
 export function MobileNav({ activeView, onSelectView }: MobileNavProps) {

@@ -76,10 +76,15 @@ export function classifyItemQuality(p: number, d: number): ItemQualityLevel {
   return 'ควรปรับปรุง';
 }
 
-export function computeItemAnalysis(quiz: Quiz, scans: ScannedSheet[]): ItemAnalysisStat[] {
+export function computeItemAnalysis(
+  quiz: Quiz,
+  scans: ScannedSheet[],
+  upperLowerGroupPct = 27
+): ItemAnalysisStat[] {
   const n = scans.length;
   const sorted = [...scans].sort((a, b) => b.score - a.score);
-  const groupSize = n >= 4 ? Math.max(1, Math.round(n * 0.27)) : 0;
+  const ratio = Math.min(0.4, Math.max(0.15, upperLowerGroupPct / 100));
+  const groupSize = n >= 4 ? Math.max(1, Math.round(n * ratio)) : 0;
   const upperGroup = groupSize > 0 ? sorted.slice(0, groupSize) : [];
   const lowerGroup = groupSize > 0 ? sorted.slice(n - groupSize) : [];
 

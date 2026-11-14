@@ -4,6 +4,8 @@ export type ChoiceOption = 'A' | 'B' | 'C' | 'D' | 'E';
 
 export const CHOICE_OPTIONS: ChoiceOption[] = ['A', 'B', 'C', 'D', 'E'];
 
+export type StudentIdDigits = 4 | 5 | 6;
+
 export type AppView =
   | 'dashboard'
   | 'scanner'
@@ -11,21 +13,96 @@ export type AppView =
   | 'sheets'
   | 'analysis'
   | 'classes'
+  | 'settings'
   | 'guide';
 
 export interface Student {
   id: string;
-  studentCode: string; // 4-digit OMR ID e.g. "1001"
+  studentCode: string; // 4-6 digit OMR ID e.g. "1001" or DMC code
   fullName: string;
   className: string; // normalized e.g. "มัธยมศึกษาปีที่ 1/1"
   numberInClass: number;
+  citizenId?: string;
+  gender?: string;
+  status?: string;
+  sourceSystem?: 'manual' | 'dmc' | 'csv' | 'json';
   createdAt: string;
+}
+
+export interface Teacher {
+  id: string;
+  teacherCode: string; // HRMS / Employee / Teacher ID
+  fullName: string;
+  position: string;
+  department: string; // กลุ่มสาระการเรียนรู้
+  homeroomClass?: string;
+  citizenId?: string;
+  email?: string;
+  phone?: string;
+  sourceSystem?: 'manual' | 'hrms' | 'csv' | 'json';
+  createdAt: string;
+}
+
+export interface Subject {
+  id: string;
+  subjectCode: string; // e.g. "ว21101"
+  subjectName: string;
+  learningArea: string;
+  gradeLevel: string;
+  credits: number;
+  teacherCode?: string;
+  teacherName?: string;
+  sourceSystem?: 'manual' | 'dmc' | 'hrms' | 'csv' | 'json';
+  createdAt: string;
+}
+
+export interface ThaiGradeCutoffs {
+  g4: number; // >= 80
+  g35: number; // >= 75
+  g3: number; // >= 70
+  g25: number; // >= 65
+  g2: number; // >= 60
+  g15: number; // >= 55
+  g1: number; // >= 50
+}
+
+export interface SystemSettings {
+  // Stage 1: School & Printable Sheet Configuration
+  schoolName: string;
+  academicYear: string;
+  semester: '1' | '2' | 'summer';
+  studentIdDigits: StudentIdDigits;
+  defaultQuestionCount: QuestionCount;
+  defaultChoiceCount: 4 | 5;
+
+  // Stage 2: Camera & OMR CV Engine
+  bubbleFillThreshold: number; // 0.18..0.45 (default 0.28)
+  multiMarkGapThreshold: number; // 0.06..0.25 (default 0.14)
+  maxTiltAngleDeg: number; // 3..15 (default 10.5)
+  autoRectifyPerspective: boolean;
+  autoCaptureCamera: boolean;
+  autoAdvanceStudent: boolean;
+  soundEnabled: boolean;
+
+  // Stage 3: Grading, Psychometrics & 8-Tier Scale
+  defaultPassThresholdPct: number;
+  defaultWrongPenalty: number;
+  upperLowerGroupPct: number; // 25..33 (default 27)
+  useThai8GradeScale: boolean;
+  gradeCutoffs: ThaiGradeCutoffs;
+
+  // Stage 4: Database Verification & Export
+  strictStudentDatabaseMatch: boolean;
+  preventDuplicateStudentScan: boolean;
+  csvIncludeItemBreakdown: boolean;
+  csvIncludeGradeLevel: boolean;
 }
 
 export interface Quiz {
   id: string;
   title: string;
   subject: string;
+  subjectCode?: string;
   className: string;
   questionCount: QuestionCount;
   choiceCount: 4 | 5;
@@ -97,7 +174,7 @@ export interface QuizSummaryStats {
   lowestScore: number;
   medianScore: number;
   standardDeviation: number;
-  passCount: number; // >= 50%
+  passCount: number; // >= passThresholdPct
   passRate: number;
   kr20Reliability: number | null;
 }
@@ -107,4 +184,17 @@ export interface HudState {
   label: string;
   status: 'running' | 'done' | 'error';
   benchmarkMs: number;
+}
+
+export interface SystemBackupPayload {
+  schema: 'gradescan-backup-v2';
+  exportedAt: string;
+  schoolName: string;
+  students: Student[];
+  teachers: Teacher[];
+  subjects: Subject[];
+  quizzes: Quiz[];
+  scans: ScannedSheet[];
+  activeQuizId: string;
+  settings: SystemSettings;
 }

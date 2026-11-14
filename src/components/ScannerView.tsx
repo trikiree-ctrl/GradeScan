@@ -15,6 +15,7 @@ import {
   SwitchCamera,
   Trash2,
   UserCheck,
+  UserPlus,
   VideoOff,
   Volume2,
   VolumeX,
@@ -25,14 +26,17 @@ import type {
   Quiz,
   ScannedSheet,
   Student,
+  SystemSettings,
 } from '../types/omr';
 import { playScanSuccessFeedback } from '../utils/feedbackAudio';
+import { normalizeThaiClassName } from '../utils/normalization';
 import { getActiveChoices } from '../utils/omrAnalytics';
 import {
   analyzeSheetAlignment,
   renderOmrPixelBuffer,
   scanOmrImageData,
   warpPerspectiveToCanonical,
+  type OmrScanOptions,
   type OmrScanResult,
   type SheetAlignmentAnalysis,
 } from '../utils/omrEngine';
@@ -41,11 +45,13 @@ import {
   drawPrintableOmrSheet,
   drawScanOverlayOnCanvas,
 } from '../utils/omrCanvasRenderer';
+import { computeThaiGrade } from '../utils/systemSettings';
 
 interface ScannerViewProps {
   activeQuiz: Quiz;
   students: Student[];
   scans: ScannedSheet[];
+  settings: SystemSettings;
   inspectedScanId: string | null;
   onSaveScan: (scan: ScannedSheet) => void;
   onUpdateScanAnswer: (
@@ -54,6 +60,8 @@ interface ScannerViewProps {
     choice: ChoiceOption | null
   ) => void;
   onReassignStudent: (scanId: string, studentId: string) => void;
+  onVerifyScanStudentCode: (scanId: string, studentCode: string) => void;
+  onQuickAddStudent: (student: Student) => void;
   onDeleteScan: (scanId: string) => void;
   onSelectInspectedScan: (scanId: string | null) => void;
   onBenchmark: (label: string, ms: number) => void;
@@ -67,10 +75,13 @@ export function ScannerView({
   activeQuiz,
   students,
   scans,
+  settings,
   inspectedScanId,
   onSaveScan,
   onUpdateScanAnswer,
   onReassignStudent,
+  onVerifyScanStudentCode,
+  onQuickAddStudent,
   onDeleteScan,
   onSelectInspectedScan,
   onBenchmark,
@@ -82,14 +93,22 @@ export function ScannerView({
   const [simPreset, setSimPreset] = useState<'high' | 'average' | 'imperfect'>(
     'imperfect'
   );
-  const [autoAdvanceStudent, setAutoAdvanceStudent] = useState<boolean>(true);
-  const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
-  const [autoCaptureCamera, setAutoCaptureCamera] = useState<boolean>(true);
-  const [autoRectifyPerspective, setAutoRectifyPerspective] =
-    useState<boolean>(true);
+  const [autoAdvanceStudent, setAutoAdvanceStudent] = useState<boolean>(
+    settings.autoAdvanceStudent
+  );
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(settings.soundEnabled);
+  const [autoCaptureCamera, setAutoCaptureCamera] = useState<boolean>(
+    settings.autoCaptureCamera
+  );
+  const [autoRectifyPerspective, setAutoRectifyPerspective] = useState<boolean>(
+    settings.autoRectifyPerspective
+  );
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>(
     'environment'
   );
+  const [manualVerifyCode, setManualVerifyCode] = useState<string>('');
+  const [quickAddName, setQuickAddName] = useState<string>('');
+  const [quickAddClass, setQuickAddClass] = useState<string>(activeQuiz.className);
 
   const [lastResult, setLastResult] = useState<OmrScanResult | null>(null);
   const [activeScanId, setActiveScanId] = useState<string | null>(
@@ -146,6 +165,19 @@ export function ScannerView({
   const inspectedScan =
     scans.find((s) => s.id === activeScanId) ?? scans[0] ?? null;
 
+  const scanOptions: OmrScanOptions = {
+    studentIdDigits: settings.studentIdDigits,
+    bubbleFillThreshold: settings.bubbleFillThreshold,
+    multiMarkGapThreshold: settings.multiMarkGapThreshold,
+    maxTiltAngleDeg: settings.maxTiltAngleDeg,
+  };
+
+  useEffect(() => {
+    if (inspectedScan) {
+      setManualVerifyCode(inspectedScan.detectedStudentCode);
+    }
+  }, [inspectedScan?.id, inspectedScan?.detectedStudentCode]);
+
   // Render preview canvas whenever inspectedScan changes and no live scan overlay is shown
   useEffect(() => {
     if (!inspectedScan || !resultCanvasRef.current) return;
@@ -156,12 +188,21 @@ export function ScannerView({
       quiz: activeQuiz,
       studentCode: inspectedScan.detectedStudentCode,
       studentName: inspectedScan.studentName,
+      studentIdDigits: settings.studentIdDigits,
+      schoolName: settings.schoolName,
+      academicYear: settings.academicYear,
+      semester: settings.semester,
       prefillAnswers: inspectedScan.answers,
     });
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const scanned = scanOmrImageData(imgData, activeQuiz);
+    const scanned = scanOmrImageData(imgData, activeQuiz, {
+      studentIdDigits: settings.studentIdDigits,
+      bubbleFillThreshold: settings.bubbleFillThreshold,
+      multiMarkGapThreshold: settings.multiMarkGapThreshold,
+      maxTiltAngleDeg: settings.maxTiltAngleDeg,
+    });
     drawScanOverlayOnCanvas(
       canvas,
       imgData,
@@ -170,7 +211,7 @@ export function ScannerView({
       inspectedScan.answers,
       inspectedScan.statuses
     );
-  }, [inspectedScan, activeQuiz, activeScanId, lastResult]);
+  }, [inspectedScan, activeQuiz, activeScanId, lastResult, settings]);
 
   const showSuccessFlash = useCallback((message: string) => {
     setScanFlashBanner(message);
@@ -188,7 +229,11 @@ export function ScannerView({
       scanSource: ScannedSheet['scanSource'],
       precomputedAlignment?: SheetAlignmentAnalysis
     ): ScannedSheet => {
-      const rawAlign = precomputedAlignment ?? analyzeSheetAlignment(imgData);
+      const rawAlign =
+        precomputedAlignment ??
+        analyzeSheetAlignment(imgData, {
+          maxTiltAngleDeg: settings.maxTiltAngleDeg,
+        });
       let workingImageData = imgData;
 
       // Auto-rectify tilted or perspective-warped sheets via 3x3 Projective Homography
@@ -211,7 +256,7 @@ export function ScannerView({
         );
       }
 
-      const res = scanOmrImageData(workingImageData, activeQuiz);
+      const res = scanOmrImageData(workingImageData, activeQuiz, scanOptions);
       setLastResult(res);
 
       if (resultCanvasRef.current) {
@@ -323,6 +368,7 @@ export function ScannerView({
         height: 1132,
         questionCount: activeQuiz.questionCount,
         choiceCount: activeQuiz.choiceCount,
+        studentIdDigits: settings.studentIdDigits,
         studentCode,
         answers: simAnswers,
         offsetX: geom?.offsetX ?? 5,
@@ -336,7 +382,7 @@ export function ScannerView({
 
       return new ImageData(new Uint8ClampedArray(buf.data), buf.width, buf.height);
     },
-    [activeQuiz, simPreset]
+    [activeQuiz, simPreset, settings.studentIdDigits]
   );
 
   const handleSimulateSingleAndAdvance = () => {
@@ -492,7 +538,9 @@ export function ScannerView({
 
   const evaluateAndMaybeCaptureFrame = useCallback(
     (imgData: ImageData, isAuto: boolean, source: ScannedSheet['scanSource']) => {
-      const alignment = analyzeSheetAlignment(imgData);
+      const alignment = analyzeSheetAlignment(imgData, {
+        maxTiltAngleDeg: settings.maxTiltAngleDeg,
+      });
       setLiveAlignment(alignment);
 
       if (isAuto) {
@@ -516,7 +564,12 @@ export function ScannerView({
           return false;
         }
 
-        const preview = scanOmrImageData(imgData, activeQuiz);
+        const preview = scanOmrImageData(imgData, activeQuiz, {
+          studentIdDigits: settings.studentIdDigits,
+          bubbleFillThreshold: settings.bubbleFillThreshold,
+          multiMarkGapThreshold: settings.multiMarkGapThreshold,
+          maxTiltAngleDeg: settings.maxTiltAngleDeg,
+        });
         const sig = `${preview.detectedStudentCode}_${preview.correctCount}_${preview.score}`;
         const now = Date.now();
         if (
@@ -533,7 +586,7 @@ export function ScannerView({
       processPixelImageData(imgData, source, alignment);
       return true;
     },
-    [activeQuiz, processPixelImageData]
+    [activeQuiz, processPixelImageData, settings]
   );
 
   const captureFromCamera = useCallback(
@@ -1314,6 +1367,9 @@ export function ScannerView({
                     </div>
                     <div className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
                       {inspectedScan.percentage.toFixed(1)}%
+                      {settings.useThai8GradeScale
+                        ? ` · เกรด ${computeThaiGrade(inspectedScan.percentage, settings.gradeCutoffs)}`
+                        : ''}
                     </div>
                   </div>
                   <button
@@ -1327,32 +1383,109 @@ export function ScannerView({
                 </div>
               </div>
 
-              {/* ZipGrade-style Quick Student Reassign */}
-              <div className="mt-4 flex flex-col gap-2 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between dark:border-slate-800">
-                <label
-                  htmlFor="reassign-student-select"
-                  className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300"
-                >
-                  <UserCheck className="h-4 w-4 text-indigo-600 dark:text-indigo-400" aria-hidden="true" />
-                  <span>แก้ไข/เชื่อมนักเรียนเจ้าของกระดาษ (กรณีฝนรหัสจาง):</span>
-                </label>
-                <select
-                  id="reassign-student-select"
-                  value={inspectedScan.studentId ?? ''}
-                  onChange={(e) => {
-                    if (e.target.value) {
-                      onReassignStudent(inspectedScan.id, e.target.value);
-                    }
-                  }}
-                  className="min-h-[42px] rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 focus:border-indigo-600 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-                >
-                  <option value="">-- เลือกนักเรียนในรายชื่อ --</option>
-                  {students.map((stu) => (
-                    <option key={stu.id} value={stu.id}>
-                      {stu.studentCode} · {stu.fullName} ({stu.className})
-                    </option>
-                  ))}
-                </select>
+              {/* Student ID Direct Input + Database Verification + Reassign */}
+              <div className="mt-4 space-y-3 border-t border-slate-100 pt-4 dark:border-slate-800">
+                <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                  <label
+                    htmlFor="verify-student-code-input"
+                    className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300"
+                  >
+                    <UserCheck className="h-4 w-4 text-indigo-600 dark:text-indigo-400" aria-hidden="true" />
+                    <span>กรอกเลขประจำตัวตรวจสอบกับฐานข้อมูล / เลือกเชื่อมนักเรียน:</span>
+                  </label>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      id="verify-student-code-input"
+                      type="text"
+                      maxLength={settings.studentIdDigits}
+                      value={manualVerifyCode}
+                      onChange={(e) => setManualVerifyCode(e.target.value.replace(/\D/g, ''))}
+                      placeholder="เลขประจำตัว"
+                      className="w-28 min-h-[40px] rounded-xl border border-slate-300 bg-white px-3 py-1.5 font-mono text-xs text-slate-900 focus:border-indigo-600 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (manualVerifyCode.trim()) {
+                          onVerifyScanStudentCode(inspectedScan.id, manualVerifyCode.trim());
+                        }
+                      }}
+                      className="min-h-[40px] rounded-xl bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 whitespace-nowrap"
+                    >
+                      ตรวจสอบรหัส
+                    </button>
+
+                    <select
+                      id="reassign-student-select"
+                      aria-label="เลือกนักเรียนจากรายชื่อ"
+                      value={inspectedScan.studentId ?? ''}
+                      onChange={(e) => {
+                        if (e.target.value) {
+                          onReassignStudent(inspectedScan.id, e.target.value);
+                        }
+                      }}
+                      className="min-h-[40px] rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 focus:border-indigo-600 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                    >
+                      <option value="">-- เลือกจากฐานข้อมูล --</option>
+                      {students.map((stu) => (
+                        <option key={stu.id} value={stu.id}>
+                          {stu.studentCode} · {stu.fullName} ({stu.className})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {settings.strictStudentDatabaseMatch && !inspectedScan.studentId && (
+                  <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-200 bg-amber-50/80 p-3 dark:border-amber-900/50 dark:bg-amber-950/30">
+                    <span className="text-xs font-medium text-amber-900 dark:text-amber-200">
+                      ไม่พบรหัส <strong className="font-mono">{inspectedScan.detectedStudentCode}</strong> ในฐานข้อมูล:
+                    </span>
+                    <input
+                      aria-label="ชื่อนักเรียนสำหรับเพิ่มเข้าระบบ"
+                      type="text"
+                      value={quickAddName}
+                      onChange={(e) => setQuickAddName(e.target.value)}
+                      placeholder="พิมพ์ชื่อ-สกุล"
+                      className="rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-xs text-slate-900 dark:border-amber-700 dark:bg-slate-900 dark:text-white"
+                    />
+                    <input
+                      aria-label="ห้องเรียนสำหรับเพิ่มเข้าระบบ"
+                      type="text"
+                      value={quickAddClass}
+                      onChange={(e) => setQuickAddClass(e.target.value)}
+                      placeholder="ห้องเรียน"
+                      className="w-24 rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-xs text-slate-900 dark:border-amber-700 dark:bg-slate-900 dark:text-white"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!quickAddName.trim()) return;
+                        const code = (manualVerifyCode || inspectedScan.detectedStudentCode)
+                          .replace(/\D/g, '')
+                          .padStart(settings.studentIdDigits, '0')
+                          .slice(-settings.studentIdDigits);
+                        const created: Student = {
+                          id: `stu_scan_${Date.now()}`,
+                          studentCode: code,
+                          fullName: quickAddName.trim(),
+                          className: normalizeThaiClassName(quickAddClass || activeQuiz.className),
+                          numberInClass: students.length + 1,
+                          sourceSystem: 'manual',
+                          createdAt: new Date().toISOString(),
+                        };
+                        onQuickAddStudent(created);
+                        onReassignStudent(inspectedScan.id, created.id);
+                        setQuickAddName('');
+                      }}
+                      className="inline-flex items-center gap-1 rounded-lg bg-amber-600 px-3 py-1 text-xs font-semibold text-white hover:bg-amber-700"
+                    >
+                      <UserPlus className="h-3.5 w-3.5" aria-hidden="true" />
+                      <span>เพิ่มรหัสนี้เข้าระบบ</span>
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div className="mt-4 grid grid-cols-4 gap-3 border-t border-slate-100 pt-4 text-center dark:border-slate-800">

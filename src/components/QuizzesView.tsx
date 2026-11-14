@@ -1,11 +1,19 @@
 import { useState } from 'react';
 import { Check, Plus, Shuffle, Trash2 } from 'lucide-react';
-import type { ChoiceOption, QuestionCount, Quiz } from '../types/omr';
+import type {
+  ChoiceOption,
+  QuestionCount,
+  Quiz,
+  Subject,
+  SystemSettings,
+} from '../types/omr';
 import { normalizeThaiClassName } from '../utils/normalization';
 import { getActiveChoices } from '../utils/omrAnalytics';
 
 interface QuizzesViewProps {
   quizzes: Quiz[];
+  subjects: Subject[];
+  settings: SystemSettings;
   activeQuizId: string;
   onSelectQuiz: (quizId: string) => void;
   onCreateQuiz: (quiz: Quiz) => void;
@@ -23,6 +31,8 @@ interface QuizzesViewProps {
 
 export function QuizzesView({
   quizzes,
+  subjects,
+  settings,
   activeQuizId,
   onSelectQuiz,
   onCreateQuiz,
@@ -32,13 +42,20 @@ export function QuizzesView({
 }: QuizzesViewProps) {
   const [showCreate, setShowCreate] = useState(false);
   const [title, setTitle] = useState('');
-  const [subject, setSubject] = useState('');
+  const [subject, setSubject] = useState(subjects[0]?.subjectName ?? '');
+  const [subjectCode, setSubjectCode] = useState(subjects[0]?.subjectCode ?? '');
   const [className, setClassName] = useState('ม.1/1');
-  const [questionCount, setQuestionCount] = useState<QuestionCount>(20);
-  const [choiceCount, setChoiceCount] = useState<4 | 5>(4);
+  const [questionCount, setQuestionCount] = useState<QuestionCount>(
+    settings.defaultQuestionCount
+  );
+  const [choiceCount, setChoiceCount] = useState<4 | 5>(
+    settings.defaultChoiceCount
+  );
   const [pointsPerQuestion, setPointsPerQuestion] = useState(1);
-  const [wrongPenalty, setWrongPenalty] = useState(0);
-  const [passThresholdPct, setPassThresholdPct] = useState(50);
+  const [wrongPenalty, setWrongPenalty] = useState(settings.defaultWrongPenalty);
+  const [passThresholdPct, setPassThresholdPct] = useState(
+    settings.defaultPassThresholdPct
+  );
   const [formError, setFormError] = useState<string | null>(null);
 
   const activeQuiz = quizzes.find((q) => q.id === activeQuizId) ?? quizzes[0];
@@ -64,6 +81,7 @@ export function QuizzesView({
       id: `quiz_${Date.now()}`,
       title: cleanTitle,
       subject: cleanSubject,
+      subjectCode: subjectCode.trim() || undefined,
       className: normalizeThaiClassName(className),
       questionCount,
       choiceCount,
@@ -77,7 +95,6 @@ export function QuizzesView({
 
     onCreateQuiz(newQuiz);
     setTitle('');
-    setSubject('');
     setFormError(null);
     setShowCreate(false);
   };
@@ -147,16 +164,29 @@ export function QuizzesView({
                 htmlFor="quiz-subject-input"
                 className="block text-xs font-medium text-slate-700 dark:text-slate-300"
               >
-                รายวิชา
+                รายวิชา (เลือกจากหลักสูตรหรือพิมพ์เอง)
               </label>
               <input
                 id="quiz-subject-input"
+                list="quiz-subject-suggestions"
                 type="text"
                 value={subject}
-                onChange={(e) => setSubject(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setSubject(val);
+                  const found = subjects.find((s) => s.subjectName === val);
+                  if (found) setSubjectCode(found.subjectCode);
+                }}
                 placeholder="เช่น ภาษาไทย / คณิตศาสตร์"
                 className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
               />
+              <datalist id="quiz-subject-suggestions">
+                {subjects.map((sub) => (
+                  <option key={sub.id} value={sub.subjectName}>
+                    {sub.subjectCode}
+                  </option>
+                ))}
+              </datalist>
             </div>
 
             <div>

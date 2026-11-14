@@ -4,6 +4,7 @@ import {
   normalizeThaiClassName,
   isInvalidStudentRecord,
   parseStudentCsv,
+  exportScansToCsv,
 } from './normalization';
 import {
   gradeResponse,
@@ -20,6 +21,22 @@ import {
   areCornersWellAligned,
   type PixelBuffer,
 } from './omrEngine';
+import {
+  parseDmcStudentsJson,
+  parseHrmsTeachersJson,
+  parseSubjectsJson,
+  autoDetectAndParseJsonImport,
+  exportFullSystemBackupJson,
+  exportPostScanScoresJson,
+  SAMPLE_DMC_JSON,
+  SAMPLE_HRMS_TEACHERS_JSON,
+  SAMPLE_SUBJECTS_JSON,
+} from './importExport';
+import {
+  computeThaiGrade,
+  DEFAULT_SYSTEM_SETTINGS,
+  sanitizeSystemSettings,
+} from './systemSettings';
 import type { ChoiceOption, Quiz, ScannedSheet } from '../types/omr';
 
 test('normalizeThaiClassName standardizes Thai primary and secondary shorthand', () => {
@@ -275,4 +292,161 @@ test('Auto-alignment rejects empty camera backgrounds and rectifies tilted persp
   assert.equal(rectifiedScan.detectedStudentCode, '3729');
   assert.equal(rectifiedScan.correctCount, 20);
   assert.equal(rectifiedScan.score, 20);
+});
+
+test('DMC & HRMS & Subject JSON importers parse Thai government/school formats cleanly', () => {
+  const dmcStudents = parseDmcStudentsJson(JSON.parse(SAMPLE_DMC_JSON), 4);
+  assert.equal(dmcStudents.length, 2);
+  assert.equal(dmcStudents[0].studentCode, '1015');
+  assert.equal(dmcStudents[0].fullName, 'เด็กชายธนกฤต รุ่งสว่าง');
+  assert.equal(dmcStudents[0].className, 'มัธยมศึกษาปีที่ 1/1');
+  assert.equal(dmcStudents[0].sourceSystem, 'dmc');
+
+  // Auto-detect HRMS Teachers
+  const hrmsResult = autoDetectAndParseJsonImport(SAMPLE_HRMS_TEACHERS_JSON);
+  assert.equal(hrmsResult.detectedType, 'hrms_teachers');
+  assert.equal(hrmsResult.teachers.length, 2);
+  assert.equal(hrmsResult.teachers[0].teacherCode, 'T201');
+  assert.equal(hrmsResult.teachers[0].homeroomClass, 'มัธยมศึกษาปีที่ 1/1');
+
+  // Auto-detect Subjects
+  const subResult = autoDetectAndParseJsonImport(SAMPLE_SUBJECTS_JSON);
+  assert.equal(subResult.detectedType, 'subjects');
+  assert.equal(subResult.subjects.length, 2);
+  assert.equal(subResult.subjects[0].subjectCode, 'ว21101');
+  assert.equal(subResult.subjects[0].credits, 1.5);
+
+  // Combined multi-entity JSON package
+  const combined = JSON.stringify({
+    students: [{ student_id: '55012', prefix: 'เด็กหญิง', first_name: 'สุชาดา', last_name: 'ใจใส', grade: 'ป.6', room: '2' }],
+    personnel: [{ emp_id: 'T901', ชื่อสกุล: 'นายประเสริฐ ดีงาม', ตำแหน่ง: 'ครู', กลุ่มสาระ: 'สังคมศึกษา' }],
+    courses: [{ course_code: 'ส16101', course_name: 'สังคมศึกษา 6', grade_level: 'ป.6', credits: 1 }],
+  });
+  const multi = autoDetectAndParseJsonImport(combined, 'auto', 5);
+  assert.equal(multi.detectedType, 'multi_entity');
+  assert.equal(multi.students[0].studentCode, '55012');
+  assert.equal(multi.students[0].className, 'ประถมศึกษาปีที่ 6/2');
+  assert.equal(multi.teachers[0].teacherCode, 'T901');
+  assert.equal(multi.subjects[0].subjectCode, 'ส16101');
+});
+
+test('Full system backup round-trip, Thai 8-tier grades, and post-scan exports work accurately', () => {
+  assert.equal(computeThaiGrade(85), '4');
+  assert.equal(computeThaiGrade(76), '3.5');
+  assert.equal(computeThaiGrade(67), '2.5');
+  assert.equal(computeThaiGrade(48), '0');
+
+  const settings = sanitizeSystemSettings({
+    schoolName: 'โรงเรียนทดสอบมาตรฐาน',
+    studentIdDigits: 5,
+    upperLowerGroupPct: 30,
+  });
+  assert.equal(settings.studentIdDigits, 5);
+  assert.equal(settings.upperLowerGroupPct, 30);
+
+  const students = parseDmcStudentsJson(JSON.parse(SAMPLE_DMC_JSON), 4);
+  const teachers = parseHrmsTeachersJson(JSON.parse(SAMPLE_HRMS_TEACHERS_JSON));
+  const subjects = parseSubjectsJson(JSON.parse(SAMPLE_SUBJECTS_JSON));
+  const quiz: Quiz = {
+    id: 'q-exp',
+    title: 'Quiz Export',
+    subject: 'วิทย์',
+    className: 'มัธยมศึกษาปีที่ 1/1',
+    questionCount: 20,
+    choiceCount: 4,
+    pointsPerQuestion: 1,
+    answerKey: Object.fromEntries(Array.from({ length: 20 }, (_, i) => [i + 1, 'A' as ChoiceOption])),
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+  };
+  const scan: ScannedSheet = {
+    id: 'sc1',
+    quizId: quiz.id,
+    studentId: students[0].id,
+    detectedStudentCode: students[0].studentCode,
+    studentName: students[0].fullName,
+    className: students[0].className,
+    answers: Object.fromEntries(Array.from({ length: 20 }, (_, i) => [i + 1, i < 16 ? ('A' as ChoiceOption) : ('B' as ChoiceOption)])),
+    statuses: Object.fromEntries(Array.from({ length: 20 }, (_, i) => [i + 1, 'filled' as const])),
+    score: 16,
+    maxScore: 20,
+    percentage: 80,
+    correctCount: 16,
+    incorrectCount: 4,
+    blankCount: 0,
+    multipleCount: 0,
+    scanSource: 'simulation',
+    scanDurationMs: 18,
+    scannedAt: '2026-01-01T00:00:00Z',
+  };
+
+  const backupJson = exportFullSystemBackupJson({
+    schoolName: settings.schoolName,
+    students,
+    teachers,
+    subjects,
+    quizzes: [quiz],
+    scans: [scan],
+    activeQuizId: quiz.id,
+    settings,
+  });
+  const restored = autoDetectAndParseJsonImport(backupJson);
+  assert.equal(restored.detectedType, 'backup');
+  assert.equal(restored.backup?.students.length, 2);
+  assert.equal(restored.backup?.teachers.length, 2);
+  assert.equal(restored.backup?.subjects.length, 2);
+  assert.equal(restored.backup?.scans.length, 1);
+
+  const summary = computeQuizSummary(quiz, [scan]);
+  const postJson = JSON.parse(exportPostScanScoresJson(quiz, [scan], students, summary, settings));
+  assert.equal(postJson.results[0].thaiGrade, '4');
+  assert.equal(postJson.results[0].databaseMatched, true);
+
+  const csv = exportScansToCsv(quiz, [scan], { settings: DEFAULT_SYSTEM_SETTINGS, students });
+  assert.ok(csv.includes('ตรงฐานข้อมูล'));
+  assert.ok(csv.includes('ผ่าน'));
+});
+
+test('OMR CV engine supports configurable 5-digit and 6-digit student ID grids', () => {
+  const key = Object.fromEntries(
+    Array.from({ length: 20 }, (_, i) => [i + 1, (['A', 'B', 'C', 'D'] as ChoiceOption[])[i % 4]])
+  );
+  const quiz: Quiz = {
+    id: 'q-6digit',
+    title: '6 Digit ID Test',
+    subject: 'Sci',
+    className: 'มัธยมศึกษาปีที่ 1/1',
+    questionCount: 20,
+    choiceCount: 4,
+    pointsPerQuestion: 1,
+    answerKey: key,
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+  };
+
+  const buf5 = renderOmrPixelBuffer({
+    width: 800,
+    height: 1132,
+    questionCount: 20,
+    choiceCount: 4,
+    studentIdDigits: 5,
+    studentCode: '54321',
+    answers: key,
+  });
+  const res5 = scanOmrImageData(buf5, quiz, { studentIdDigits: 5 });
+  assert.equal(res5.detectedStudentCode, '54321');
+  assert.equal(res5.correctCount, 20);
+
+  const buf6 = renderOmrPixelBuffer({
+    width: 800,
+    height: 1132,
+    questionCount: 20,
+    choiceCount: 4,
+    studentIdDigits: 6,
+    studentCode: '650412',
+    answers: key,
+  });
+  const res6 = scanOmrImageData(buf6, quiz, { studentIdDigits: 6 });
+  assert.equal(res6.detectedStudentCode, '650412');
+  assert.equal(res6.correctCount, 20);
 });

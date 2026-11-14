@@ -1,21 +1,40 @@
-import type { ChoiceOption, Quiz, ScannedSheet, Student } from '../types/omr';
+import type {
+  ChoiceOption,
+  Quiz,
+  ScannedSheet,
+  Student,
+  Subject,
+  Teacher,
+} from '../types/omr';
 import { gradeResponse } from '../utils/omrAnalytics';
 
 export const SEED_STUDENTS: Student[] = [
-  { id: 'stu_1001', studentCode: '1001', fullName: 'เด็กชายกิตติพงศ์ วัฒนา', className: 'มัธยมศึกษาปีที่ 1/1', numberInClass: 1, createdAt: '2026-10-01T08:00:00Z' },
-  { id: 'stu_1002', studentCode: '1002', fullName: 'เด็กหญิงชนากานต์ ศรีสุข', className: 'มัธยมศึกษาปีที่ 1/1', numberInClass: 2, createdAt: '2026-10-01T08:00:00Z' },
-  { id: 'stu_1003', studentCode: '1003', fullName: 'เด็กชายณัฐวุฒิ แสงทอง', className: 'มัธยมศึกษาปีที่ 1/1', numberInClass: 3, createdAt: '2026-10-01T08:00:00Z' },
-  { id: 'stu_1004', studentCode: '1004', fullName: 'เด็กหญิงธัญญารัตน์ อินทร์แก้ว', className: 'มัธยมศึกษาปีที่ 1/1', numberInClass: 4, createdAt: '2026-10-01T08:00:00Z' },
-  { id: 'stu_1005', studentCode: '1005', fullName: 'เด็กชายปวริศร์ ใจมั่น', className: 'มัธยมศึกษาปีที่ 1/1', numberInClass: 5, createdAt: '2026-10-01T08:00:00Z' },
-  { id: 'stu_1006', studentCode: '1006', fullName: 'เด็กหญิงพิมพ์ชนก บุญมา', className: 'มัธยมศึกษาปีที่ 1/1', numberInClass: 6, createdAt: '2026-10-01T08:00:00Z' },
-  { id: 'stu_1007', studentCode: '1007', fullName: 'เด็กชายภานุพงศ์ วงศ์ใหญ่', className: 'มัธยมศึกษาปีที่ 1/1', numberInClass: 7, createdAt: '2026-10-01T08:00:00Z' },
-  { id: 'stu_1008', studentCode: '1008', fullName: 'เด็กหญิงมณีรัตน์ พูลสวัสดิ์', className: 'มัธยมศึกษาปีที่ 1/1', numberInClass: 8, createdAt: '2026-10-01T08:00:00Z' },
-  { id: 'stu_1009', studentCode: '1009', fullName: 'เด็กชายวรากร รุ่งเรือง', className: 'มัธยมศึกษาปีที่ 1/1', numberInClass: 9, createdAt: '2026-10-01T08:00:00Z' },
-  { id: 'stu_1010', studentCode: '1010', fullName: 'เด็กหญิงสุพิชชา คงคา', className: 'มัธยมศึกษาปีที่ 1/1', numberInClass: 10, createdAt: '2026-10-01T08:00:00Z' },
-  { id: 'stu_1011', studentCode: '1011', fullName: 'เด็กชายอนันตชัย แก้วมณี', className: 'มัธยมศึกษาปีที่ 1/2', numberInClass: 1, createdAt: '2026-10-01T08:00:00Z' },
-  { id: 'stu_1012', studentCode: '1012', fullName: 'เด็กหญิงอริสา ทองดี', className: 'มัธยมศึกษาปีที่ 1/2', numberInClass: 2, createdAt: '2026-10-01T08:00:00Z' },
-  { id: 'stu_1013', studentCode: '1013', fullName: 'เด็กชายเอกพล สุขเจริญ', className: 'มัธยมศึกษาปีที่ 1/2', numberInClass: 3, createdAt: '2026-10-01T08:00:00Z' },
-  { id: 'stu_1014', studentCode: '1014', fullName: 'เด็กหญิงกนกวรรณ ชัยชนะ', className: 'มัธยมศึกษาปีที่ 1/2', numberInClass: 4, createdAt: '2026-10-01T08:00:00Z' },
+  { id: 'stu_1001', studentCode: '1001', fullName: 'เด็กชายกิตติพงศ์ วัฒนา', className: 'มัธยมศึกษาปีที่ 1/1', numberInClass: 1, sourceSystem: 'dmc', createdAt: '2026-10-01T08:00:00Z' },
+  { id: 'stu_1002', studentCode: '1002', fullName: 'เด็กหญิงชนากานต์ ศรีสุข', className: 'มัธยมศึกษาปีที่ 1/1', numberInClass: 2, sourceSystem: 'dmc', createdAt: '2026-10-01T08:00:00Z' },
+  { id: 'stu_1003', studentCode: '1003', fullName: 'เด็กชายณัฐวุฒิ แสงทอง', className: 'มัธยมศึกษาปีที่ 1/1', numberInClass: 3, sourceSystem: 'dmc', createdAt: '2026-10-01T08:00:00Z' },
+  { id: 'stu_1004', studentCode: '1004', fullName: 'เด็กหญิงธัญญารัตน์ อินทร์แก้ว', className: 'มัธยมศึกษาปีที่ 1/1', numberInClass: 4, sourceSystem: 'dmc', createdAt: '2026-10-01T08:00:00Z' },
+  { id: 'stu_1005', studentCode: '1005', fullName: 'เด็กชายปวริศร์ ใจมั่น', className: 'มัธยมศึกษาปีที่ 1/1', numberInClass: 5, sourceSystem: 'dmc', createdAt: '2026-10-01T08:00:00Z' },
+  { id: 'stu_1006', studentCode: '1006', fullName: 'เด็กหญิงพิมพ์ชนก บุญมา', className: 'มัธยมศึกษาปีที่ 1/1', numberInClass: 6, sourceSystem: 'dmc', createdAt: '2026-10-01T08:00:00Z' },
+  { id: 'stu_1007', studentCode: '1007', fullName: 'เด็กชายภานุพงศ์ วงศ์ใหญ่', className: 'มัธยมศึกษาปีที่ 1/1', numberInClass: 7, sourceSystem: 'dmc', createdAt: '2026-10-01T08:00:00Z' },
+  { id: 'stu_1008', studentCode: '1008', fullName: 'เด็กหญิงมณีรัตน์ พูลสวัสดิ์', className: 'มัธยมศึกษาปีที่ 1/1', numberInClass: 8, sourceSystem: 'dmc', createdAt: '2026-10-01T08:00:00Z' },
+  { id: 'stu_1009', studentCode: '1009', fullName: 'เด็กชายวรากร รุ่งเรือง', className: 'มัธยมศึกษาปีที่ 1/1', numberInClass: 9, sourceSystem: 'dmc', createdAt: '2026-10-01T08:00:00Z' },
+  { id: 'stu_1010', studentCode: '1010', fullName: 'เด็กหญิงสุพิชชา คงคา', className: 'มัธยมศึกษาปีที่ 1/1', numberInClass: 10, sourceSystem: 'dmc', createdAt: '2026-10-01T08:00:00Z' },
+  { id: 'stu_1011', studentCode: '1011', fullName: 'เด็กชายอนันตชัย แก้วมณี', className: 'มัธยมศึกษาปีที่ 1/2', numberInClass: 1, sourceSystem: 'dmc', createdAt: '2026-10-01T08:00:00Z' },
+  { id: 'stu_1012', studentCode: '1012', fullName: 'เด็กหญิงอริสา ทองดี', className: 'มัธยมศึกษาปีที่ 1/2', numberInClass: 2, sourceSystem: 'dmc', createdAt: '2026-10-01T08:00:00Z' },
+  { id: 'stu_1013', studentCode: '1013', fullName: 'เด็กชายเอกพล สุขเจริญ', className: 'มัธยมศึกษาปีที่ 1/2', numberInClass: 3, sourceSystem: 'dmc', createdAt: '2026-10-01T08:00:00Z' },
+  { id: 'stu_1014', studentCode: '1014', fullName: 'เด็กหญิงกนกวรรณ ชัยชนะ', className: 'มัธยมศึกษาปีที่ 1/2', numberInClass: 4, sourceSystem: 'dmc', createdAt: '2026-10-01T08:00:00Z' },
+];
+
+export const SEED_TEACHERS: Teacher[] = [
+  { id: 'tch_101', teacherCode: 'T101', fullName: 'นายวรพจน์ ศรีมงคล', position: 'ครูชำนาญการพิเศษ', department: 'วิทยาศาสตร์และเทคโนโลยี', homeroomClass: 'มัธยมศึกษาปีที่ 1/1', email: 'worapoj@school.ac.th', sourceSystem: 'hrms', createdAt: '2026-10-01T08:00:00Z' },
+  { id: 'tch_102', teacherCode: 'T102', fullName: 'นางสาวณัฐธิดา ปัญญาดี', position: 'ครูชำนาญการ', department: 'คณิตศาสตร์', homeroomClass: 'มัธยมศึกษาปีที่ 1/2', email: 'natthida@school.ac.th', sourceSystem: 'hrms', createdAt: '2026-10-01T08:00:00Z' },
+  { id: 'tch_103', teacherCode: 'T103', fullName: 'นายธนากร สุขสันต์', position: 'ครูผู้ช่วย', department: 'ภาษาไทย', email: 'thanakorn@school.ac.th', sourceSystem: 'hrms', createdAt: '2026-10-01T08:00:00Z' },
+];
+
+export const SEED_SUBJECTS: Subject[] = [
+  { id: 'sub_sci', subjectCode: 'ว21101', subjectName: 'วิทยาศาสตร์พื้นฐาน 1', learningArea: 'วิทยาศาสตร์และเทคโนโลยี', gradeLevel: 'มัธยมศึกษาปีที่ 1', credits: 1.5, teacherCode: 'T101', teacherName: 'นายวรพจน์ ศรีมงคล', sourceSystem: 'dmc', createdAt: '2026-10-01T08:00:00Z' },
+  { id: 'sub_math', subjectCode: 'ค21201', subjectName: 'คณิตศาสตร์เพิ่มเติม 1', learningArea: 'คณิตศาสตร์', gradeLevel: 'มัธยมศึกษาปีที่ 1', credits: 1.0, teacherCode: 'T102', teacherName: 'นางสาวณัฐธิดา ปัญญาดี', sourceSystem: 'dmc', createdAt: '2026-10-01T08:00:00Z' },
+  { id: 'sub_thai', subjectCode: 'ท21101', subjectName: 'ภาษาไทย 1', learningArea: 'ภาษาไทย', gradeLevel: 'มัธยมศึกษาปีที่ 1', credits: 1.5, teacherCode: 'T103', teacherName: 'นายธนากร สุขสันต์', sourceSystem: 'dmc', createdAt: '2026-10-01T08:00:00Z' },
 ];
 
 const sciKey: Record<number, ChoiceOption> = {
