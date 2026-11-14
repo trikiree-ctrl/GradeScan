@@ -26,8 +26,13 @@ import {
   type AutoJsonImportResult,
 } from '../utils/importExport';
 import {
+  collectKnownClassrooms,
+  formatClassroomLabel,
+  formatClassroomShort,
   isInvalidStudentRecord,
   normalizeThaiClassName,
+  STANDARD_SCHOOL_CLASSROOMS,
+  STANDARD_THAI_LEARNING_AREAS,
 } from '../utils/normalization';
 import {
   exportRowsToXlsxDownload,
@@ -163,6 +168,8 @@ export function ClassesView({
   const [searchQuery, setSearchQuery] = useState('');
   const [classFilter, setClassFilter] = useState<string>('all');
   const [subjectGradeFilter, setSubjectGradeFilter] = useState<string>('all');
+  const [subjectAreaFilter, setSubjectAreaFilter] = useState<string>('all');
+  const [subjectTeacherFilter, setSubjectTeacherFilter] = useState<string>('all');
 
   // Panel toggles
   const [showBatchAdd, setShowBatchAdd] = useState(false);
@@ -172,7 +179,11 @@ export function ClassesView({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
   const [bulkEditing, setBulkEditing] = useState(false);
-  const [batchClassTarget, setBatchClassTarget] = useState('ม.1/1');
+  const [batchClassTarget, setBatchClassTarget] = useState('ประถมศึกษาปีที่ 1/1');
+  const [batchSubjectTargetTeacher, setBatchSubjectTargetTeacher] = useState<string>('');
+  const [batchSubjectTargetArea, setBatchSubjectTargetArea] = useState<string>('วิทยาศาสตร์และเทคโนโลยี');
+  const [batchSubjectTargetGrade, setBatchSubjectTargetGrade] = useState<string>('ประถมศึกษาปีที่ 1/1');
+  const [isCustomClassInput, setIsCustomClassInput] = useState<boolean>(false);
 
   // Draft maps for inline spreadsheet editing of selected rows
   const [studentEdits, setStudentEdits] = useState<Record<string, Student>>({});
@@ -241,6 +252,9 @@ export function ClassesView({
     setSearchQuery('');
     setClassFilter('all');
     setSubjectGradeFilter('all');
+    setSubjectAreaFilter('all');
+    setSubjectTeacherFilter('all');
+    setIsCustomClassInput(false);
     setUploadedWorkbook(null);
     setSelectedSheetName('');
     const nextSample =
@@ -263,7 +277,29 @@ export function ClassesView({
     );
   }, [activeTab, digits]);
 
-  // Derived filtered lists
+  // Derived filtered lists & school collections
+  const knownClassrooms = useMemo(() => {
+    return collectKnownClassrooms(students, subjects, teachers);
+  }, [students, subjects, teachers]);
+
+  const learningAreas = useMemo(() => {
+    const set = new Set<string>(STANDARD_THAI_LEARNING_AREAS);
+    for (const sub of subjects) {
+      if (sub.learningArea) set.add(sub.learningArea);
+    }
+    return Array.from(set);
+  }, [subjects]);
+
+  const teacherNames = useMemo(() => {
+    const list = teachers.map((t) => t.fullName.trim()).filter(Boolean);
+    for (const s of subjects) {
+      if (s.teacherName && !list.includes(s.teacherName.trim())) {
+        list.push(s.teacherName.trim());
+      }
+    }
+    return Array.from(new Set(list)).sort((a, b) => a.localeCompare(b, 'th'));
+  }, [teachers, subjects]);
+
   const normalizedClasses = useMemo(() => {
     const set = new Set<string>();
     for (const s of students) set.add(s.className);
@@ -313,6 +349,14 @@ export function ClassesView({
       .filter((sub) =>
         subjectGradeFilter === 'all' ? true : sub.gradeLevel === subjectGradeFilter
       )
+      .filter((sub) =>
+        subjectAreaFilter === 'all' ? true : sub.learningArea === subjectAreaFilter
+      )
+      .filter((sub) =>
+        subjectTeacherFilter === 'all'
+          ? true
+          : (sub.teacherName ?? '') === subjectTeacherFilter
+      )
       .filter(
         (sub) =>
           !q ||
@@ -322,8 +366,12 @@ export function ClassesView({
           sub.gradeLevel.toLowerCase().includes(q) ||
           (sub.teacherName ?? '').toLowerCase().includes(q)
       )
-      .sort((a, b) => a.gradeLevel.localeCompare(b.gradeLevel, 'th') || a.subjectCode.localeCompare(b.subjectCode));
-  }, [subjects, searchQuery, subjectGradeFilter]);
+      .sort(
+        (a, b) =>
+          a.gradeLevel.localeCompare(b.gradeLevel, 'th') ||
+          a.subjectCode.localeCompare(b.subjectCode)
+      );
+  }, [subjects, searchQuery, subjectGradeFilter, subjectAreaFilter, subjectTeacherFilter]);
 
   const currentRowIds = useMemo(() => {
     if (activeTab === 'students') return filteredStudents.map((s) => s.id);
@@ -421,6 +469,40 @@ export function ClassesView({
       .map((s) => ({ ...s, className: normalized }));
     onBulkUpdateStudents(updated);
     setActionMessage(`ย้ายห้องเรียนให้ ${updated.length} คน เป็น ${normalized} แล้ว`);
+    setSelectedIds(new Set());
+    setBulkEditing(false);
+  };
+
+  const handleApplyBatchSubjectTeacher = (targetTeacherName: string) => {
+    if (activeTab !== 'subjects' || selectedIds.size === 0) return;
+    const updated = subjects
+      .filter((s) => selectedIds.has(s.id))
+      .map((s) => ({ ...s, teacherName: targetTeacherName.trim() || undefined }));
+    onBulkUpdateSubjects(updated);
+    setActionMessage(`มอบหมายครูผู้สอนให้ ${updated.length} วิชาเป็น "${targetTeacherName || 'ไม่ระบุ'}" แล้ว`);
+    setSelectedIds(new Set());
+    setBulkEditing(false);
+  };
+
+  const handleApplyBatchSubjectArea = (targetArea: string) => {
+    if (activeTab !== 'subjects' || selectedIds.size === 0) return;
+    const updated = subjects
+      .filter((s) => selectedIds.has(s.id))
+      .map((s) => ({ ...s, learningArea: targetArea }));
+    onBulkUpdateSubjects(updated);
+    setActionMessage(`เปลี่ยนกลุ่มสาระการเรียนรู้ให้ ${updated.length} วิชาเป็น "${targetArea}" แล้ว`);
+    setSelectedIds(new Set());
+    setBulkEditing(false);
+  };
+
+  const handleApplyBatchSubjectGrade = (targetGrade: string) => {
+    if (activeTab !== 'subjects' || selectedIds.size === 0) return;
+    const normalized = normalizeThaiClassName(targetGrade);
+    const updated = subjects
+      .filter((s) => selectedIds.has(s.id))
+      .map((s) => ({ ...s, gradeLevel: normalized }));
+    onBulkUpdateSubjects(updated);
+    setActionMessage(`เปลี่ยนระดับชั้น/ห้องให้ ${updated.length} วิชาเป็น "${normalized}" แล้ว`);
     setSelectedIds(new Set());
     setBulkEditing(false);
   };
@@ -1102,6 +1184,21 @@ export function ClassesView({
 
             {activeTab === 'students' && (
               <div className="space-y-2">
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const firstClass = batchStudentRows[0]?.className;
+                      if (!firstClass) return;
+                      setBatchStudentRows((prev) =>
+                        prev.map((item) => ({ ...item, className: firstClass }))
+                      );
+                    }}
+                    className="text-[11px] font-medium text-indigo-600 hover:underline dark:text-indigo-400"
+                  >
+                    ใช้ห้องเรียนแถวที่ 1 กับทุกแถว
+                  </button>
+                </div>
                 {batchStudentRows.map((row, idx) => (
                   <div key={row.key} className="grid grid-cols-1 gap-2 sm:grid-cols-12">
                     <input
@@ -1133,7 +1230,7 @@ export function ClassesView({
                       placeholder="ชื่อ-นามสกุล"
                       className="sm:col-span-5 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-white"
                     />
-                    <input
+                    <select
                       aria-label={`ห้องเรียนแถวที่ ${idx + 1}`}
                       value={row.className}
                       onChange={(e) =>
@@ -1143,9 +1240,14 @@ export function ClassesView({
                           )
                         )
                       }
-                      placeholder="ห้อง เช่น ม.1/1"
-                      className="sm:col-span-3 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-white"
-                    />
+                      className="sm:col-span-3 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                    >
+                      {knownClassrooms.map((cls) => (
+                        <option key={cls} value={cls}>
+                          {formatClassroomLabel(cls)}
+                        </option>
+                      ))}
+                    </select>
                     <input
                       aria-label={`เลขที่แถวที่ ${idx + 1}`}
                       type="number"
@@ -1258,7 +1360,7 @@ export function ClassesView({
                       placeholder="ชื่อรายวิชา"
                       className="sm:col-span-4 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-white"
                     />
-                    <input
+                    <select
                       aria-label={`กลุ่มสาระวิชาแถวที่ ${idx + 1}`}
                       value={row.learningArea}
                       onChange={(e) =>
@@ -1268,10 +1370,15 @@ export function ClassesView({
                           )
                         )
                       }
-                      placeholder="กลุ่มสาระ"
-                      className="sm:col-span-3 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-white"
-                    />
-                    <input
+                      className="sm:col-span-3 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                    >
+                      {learningAreas.map((area) => (
+                        <option key={area} value={area}>
+                          {area}
+                        </option>
+                      ))}
+                    </select>
+                    <select
                       aria-label={`ระดับชั้นแถวที่ ${idx + 1}`}
                       value={row.gradeLevel}
                       onChange={(e) =>
@@ -1281,9 +1388,14 @@ export function ClassesView({
                           )
                         )
                       }
-                      placeholder="ระดับชั้น"
-                      className="sm:col-span-2 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-white"
-                    />
+                      className="sm:col-span-2 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                    >
+                      {knownClassrooms.map((cls) => (
+                        <option key={cls} value={cls}>
+                          {formatClassroomShort(cls)}
+                        </option>
+                      ))}
+                    </select>
                     <input
                       aria-label={`หน่วยกิตแถวที่ ${idx + 1}`}
                       type="number"
@@ -1370,18 +1482,42 @@ export function ClassesView({
 
               <div className="sm:col-span-3">
                 <label
-                  htmlFor="student-class-input"
+                  htmlFor="student-class-select"
                   className="block text-xs font-medium text-slate-700 dark:text-slate-300"
                 >
-                  ห้องเรียน (เช่น ป 1/1 หรือ ม.1/1)
+                  ห้องเรียน (เลือกจากรายการ)
                 </label>
-                <input
-                  id="student-class-input"
-                  type="text"
-                  value={rawClass}
-                  onChange={(e) => setRawClass(e.target.value)}
-                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-600 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                />
+                <select
+                  id="student-class-select"
+                  aria-label="เลือกห้องเรียนนักเรียน"
+                  value={isCustomClassInput ? '__custom__' : rawClass}
+                  onChange={(e) => {
+                    if (e.target.value === '__custom__') {
+                      setIsCustomClassInput(true);
+                    } else {
+                      setIsCustomClassInput(false);
+                      setRawClass(e.target.value);
+                    }
+                  }}
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 focus:border-indigo-600 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                >
+                  {knownClassrooms.map((cls) => (
+                    <option key={cls} value={cls}>
+                      {formatClassroomLabel(cls)}
+                    </option>
+                  ))}
+                  <option value="__custom__">+ ระบุห้องเรียนอื่น...</option>
+                </select>
+                {isCustomClassInput && (
+                  <input
+                    type="text"
+                    aria-label="ระบุห้องเรียนเอง"
+                    value={rawClass}
+                    onChange={(e) => setRawClass(e.target.value)}
+                    placeholder="เช่น ป.1/3 หรือ ม.4"
+                    className="mt-1.5 w-full rounded-lg border border-indigo-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 dark:border-indigo-700 dark:bg-slate-900 dark:text-white"
+                  />
+                )}
               </div>
 
               <div className="sm:col-span-1">
@@ -1462,19 +1598,66 @@ export function ClassesView({
                 >
                   กลุ่มสาระการเรียนรู้
                 </label>
-                <input
+                <select
                   id="teacher-dept-input"
-                  type="text"
+                  aria-label="เลือกกลุ่มสาระครู"
                   value={teacherDept}
                   onChange={(e) => setTeacherDept(e.target.value)}
-                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                />
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                >
+                  {learningAreas.map((area) => (
+                    <option key={area} value={area}>
+                      {area}
+                    </option>
+                  ))}
+                </select>
               </div>
             </>
           )}
 
           {activeTab === 'subjects' && (
             <>
+              <div className="sm:col-span-12 rounded-lg bg-slate-50 p-2.5 dark:bg-slate-800/60">
+                <label
+                  htmlFor="subject-picker-select"
+                  className="block text-xs font-medium text-slate-700 dark:text-slate-300"
+                >
+                  ดรอปดาวน์เลือกรายวิชาจากฐานข้อมูล ({subjects.length} วิชา) หรือกรอกใหม่
+                </label>
+                <select
+                  id="subject-picker-select"
+                  aria-label="เลือกรายวิชาจากฐานข้อมูลหรือพิมพ์ใหม่"
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val === '__new__') {
+                      setSubjectCode('');
+                      setSubjectName('');
+                      setSubjectTeacherName('');
+                      return;
+                    }
+                    const chosen = subjects.find((s) => s.id === val);
+                    if (chosen) {
+                      setSubjectCode(chosen.subjectCode);
+                      setSubjectName(chosen.subjectName);
+                      setSubjectArea(chosen.learningArea);
+                      setSubjectGrade(chosen.gradeLevel);
+                      setSubjectCredits(chosen.credits);
+                      setSubjectTeacherName(chosen.teacherName ?? '');
+                      setSubjectPeriods(chosen.periodsPerWeek ?? 2);
+                    }
+                  }}
+                  defaultValue="__new__"
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-900 focus:border-indigo-600 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                >
+                  <option value="__new__">+ สร้างวิชาใหม่ / ระบุรหัสและชื่อเอง</option>
+                  {subjects.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.subjectCode} · {s.subjectName} ({formatClassroomShort(s.gradeLevel)}){s.teacherName ? ` — ${s.teacherName}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <div className="sm:col-span-2">
                 <label
                   htmlFor="subject-code-input"
@@ -1511,36 +1694,69 @@ export function ClassesView({
 
               <div className="sm:col-span-2">
                 <label
-                  htmlFor="subject-grade-input"
+                  htmlFor="subject-area-select"
                   className="block text-xs font-medium text-slate-700 dark:text-slate-300"
                 >
-                  ระดับชั้น/ห้อง
+                  กลุ่มสาระการเรียนรู้
                 </label>
-                <input
-                  id="subject-grade-input"
-                  type="text"
-                  value={subjectGrade}
-                  onChange={(e) => setSubjectGrade(e.target.value)}
-                  placeholder="ป.5/1 หรือ ม.1"
-                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                />
+                <select
+                  id="subject-area-select"
+                  aria-label="เลือกกลุ่มสาระการเรียนรู้"
+                  value={subjectArea}
+                  onChange={(e) => setSubjectArea(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                >
+                  {learningAreas.map((area) => (
+                    <option key={area} value={area}>
+                      {area}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <div className="sm:col-span-2">
                 <label
-                  htmlFor="subject-teacher-input"
+                  htmlFor="subject-grade-select"
+                  className="block text-xs font-medium text-slate-700 dark:text-slate-300"
+                >
+                  ระดับชั้น/ห้อง
+                </label>
+                <select
+                  id="subject-grade-select"
+                  aria-label="เลือกระดับชั้น/ห้อง"
+                  value={subjectGrade}
+                  onChange={(e) => setSubjectGrade(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                >
+                  {knownClassrooms.map((cls) => (
+                    <option key={cls} value={cls}>
+                      {formatClassroomLabel(cls)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="sm:col-span-2">
+                <label
+                  htmlFor="subject-teacher-select"
                   className="block text-xs font-medium text-slate-700 dark:text-slate-300"
                 >
                   ครูผู้สอน
                 </label>
-                <input
-                  id="subject-teacher-input"
-                  type="text"
+                <select
+                  id="subject-teacher-select"
+                  aria-label="เลือกครูผู้สอน"
                   value={subjectTeacherName}
                   onChange={(e) => setSubjectTeacherName(e.target.value)}
-                  placeholder="ชื่อครูผู้สอน"
-                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                />
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                >
+                  <option value="">-- ไม่ระบุครูผู้สอน --</option>
+                  {teacherNames.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <div className="sm:col-span-1">
@@ -1641,21 +1857,77 @@ export function ClassesView({
               )}
 
               {activeTab === 'students' && (
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="text"
-                    aria-label="ย้ายห้องเรียนเป็น"
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] text-indigo-900/80 dark:text-indigo-200/80">ย้ายห้องเป็น:</span>
+                  <select
+                    aria-label="เลือกห้องเรียนเป้าหมาย"
                     value={batchClassTarget}
                     onChange={(e) => setBatchClassTarget(e.target.value)}
-                    className="w-24 rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-normal text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
-                  />
+                    className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-normal text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                  >
+                    {knownClassrooms.map((cls) => (
+                      <option key={cls} value={cls}>
+                        {formatClassroomLabel(cls)}
+                      </option>
+                    ))}
+                  </select>
                   <button
                     type="button"
                     onClick={handleApplyBatchClassMove}
                     className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
                   >
-                    ย้ายห้องทั้งหมดที่เลือก
+                    ย้ายห้องทั้งหมดที่เลือก ({selectedIds.size})
                   </button>
+                </div>
+              )}
+
+              {activeTab === 'subjects' && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-1">
+                    <select
+                      aria-label="เลือกครูผู้สอนเป้าหมาย"
+                      value={batchSubjectTargetTeacher}
+                      onChange={(e) => setBatchSubjectTargetTeacher(e.target.value)}
+                      className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-normal text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                    >
+                      <option value="">-- มอบหมายครูผู้สอน --</option>
+                      {teacherNames.map((name) => (
+                        <option key={name} value={name}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      disabled={!batchSubjectTargetTeacher}
+                      onClick={() => handleApplyBatchSubjectTeacher(batchSubjectTargetTeacher)}
+                      className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                    >
+                      มอบหมาย
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-1">
+                    <select
+                      aria-label="เลือกระดับชั้นเป้าหมาย"
+                      value={batchSubjectTargetGrade}
+                      onChange={(e) => setBatchSubjectTargetGrade(e.target.value)}
+                      className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-normal text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                    >
+                      {knownClassrooms.map((cls) => (
+                        <option key={cls} value={cls}>
+                          {formatClassroomShort(cls)}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => handleApplyBatchSubjectGrade(batchSubjectTargetGrade)}
+                      className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                    >
+                      เปลี่ยนระดับชั้น
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -1712,32 +1984,27 @@ export function ClassesView({
         <div className="flex flex-col gap-3 border-b border-slate-200 px-6 py-4 md:flex-row md:items-center md:justify-between dark:border-slate-800">
           <div className="flex flex-wrap items-center gap-2">
             {activeTab === 'students' ? (
-              <div className="flex flex-wrap items-center gap-1 rounded-lg bg-slate-100 p-1 dark:bg-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setClassFilter('all')}
-                  className={`rounded-md px-3 py-1 text-xs font-medium transition-colors whitespace-nowrap ${
-                    classFilter === 'all'
-                      ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white'
-                      : 'text-slate-600 hover:text-slate-900 dark:text-slate-300'
-                  }`}
+              <div className="flex flex-wrap items-center gap-2">
+                <label htmlFor="student-class-filter-select" className="text-xs font-medium text-slate-600 dark:text-slate-300">
+                  ห้องเรียน:
+                </label>
+                <select
+                  id="student-class-filter-select"
+                  aria-label="กรองตามห้องเรียนนักเรียน"
+                  value={classFilter}
+                  onChange={(e) => setClassFilter(e.target.value)}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
                 >
-                  ทุกห้อง ({students.length})
-                </button>
-                {normalizedClasses.map((cls) => (
-                  <button
-                    key={cls}
-                    type="button"
-                    onClick={() => setClassFilter(cls)}
-                    className={`rounded-md px-3 py-1 text-xs font-medium transition-colors whitespace-nowrap ${
-                      classFilter === cls
-                        ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white'
-                        : 'text-slate-600 hover:text-slate-900 dark:text-slate-300'
-                    }`}
-                  >
-                    {cls}
-                  </button>
-                ))}
+                  <option value="all">ทุกห้องเรียน ({students.length} คน)</option>
+                  {knownClassrooms.map((cls) => {
+                    const cnt = students.filter((s) => s.className === cls).length;
+                    return (
+                      <option key={cls} value={cls}>
+                        {formatClassroomLabel(cls)} {cnt > 0 ? `(${cnt} คน)` : '(0 คน)'}
+                      </option>
+                    );
+                  })}
+                </select>
               </div>
             ) : activeTab === 'teachers' ? (
               <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
@@ -1746,20 +2013,59 @@ export function ClassesView({
             ) : (
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
-                  รายวิชาตามตารางสอน <span className="font-mono tabular-nums">{filteredSubjects.length}</span> รายการ
+                  ตารางสอน <span className="font-mono tabular-nums">{filteredSubjects.length}</span>/{subjects.length} วิชา
                 </span>
+
                 <select
                   aria-label="กรองรายวิชาตามระดับชั้น"
                   value={subjectGradeFilter}
                   onChange={(e) => setSubjectGradeFilter(e.target.value)}
                   className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
                 >
-                  <option value="all">ทุกระดับชั้น ({subjects.length})</option>
-                  {subjectGrades.map((grade) => (
-                    <option key={grade} value={grade}>
-                      {grade}
-                    </option>
-                  ))}
+                  <option value="all">ทุกระดับชั้น/ห้อง ({subjects.length})</option>
+                  {knownClassrooms.map((grade) => {
+                    const cnt = subjects.filter((s) => s.gradeLevel === grade).length;
+                    if (cnt === 0) return null;
+                    return (
+                      <option key={grade} value={grade}>
+                        {formatClassroomLabel(grade)} ({cnt})
+                      </option>
+                    );
+                  })}
+                </select>
+
+                <select
+                  aria-label="กรองตามกลุ่มสาระการเรียนรู้"
+                  value={subjectAreaFilter}
+                  onChange={(e) => setSubjectAreaFilter(e.target.value)}
+                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                >
+                  <option value="all">ทุกกลุ่มสาระการเรียนรู้</option>
+                  {learningAreas.map((area) => {
+                    const cnt = subjects.filter((s) => s.learningArea === area).length;
+                    return (
+                      <option key={area} value={area}>
+                        {area} ({cnt})
+                      </option>
+                    );
+                  })}
+                </select>
+
+                <select
+                  aria-label="กรองตามครูผู้สอน"
+                  value={subjectTeacherFilter}
+                  onChange={(e) => setSubjectTeacherFilter(e.target.value)}
+                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                >
+                  <option value="all">ครูผู้สอนทุกคน</option>
+                  {teacherNames.map((name) => {
+                    const cnt = subjects.filter((s) => s.teacherName === name).length;
+                    return (
+                      <option key={name} value={name}>
+                        {name} ({cnt})
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
             )}
@@ -1897,7 +2203,7 @@ export function ClassesView({
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-300">
                         {editRow ? (
-                          <input
+                          <select
                             aria-label={`แก้ไขห้อง ${stu.fullName}`}
                             value={editRow.className}
                             onChange={(e) =>
@@ -1906,10 +2212,16 @@ export function ClassesView({
                                 [stu.id]: { ...editRow, className: e.target.value },
                               }))
                             }
-                            className="w-36 rounded border border-indigo-300 bg-white px-2 py-1 text-xs text-slate-900 dark:border-indigo-700 dark:bg-slate-900 dark:text-white"
-                          />
+                            className="rounded border border-indigo-300 bg-white px-2 py-1 text-xs text-slate-900 dark:border-indigo-700 dark:bg-slate-900 dark:text-white"
+                          >
+                            {knownClassrooms.map((cls) => (
+                              <option key={cls} value={cls}>
+                                {formatClassroomLabel(cls)}
+                              </option>
+                            ))}
+                          </select>
                         ) : (
-                          stu.className
+                          formatClassroomLabel(stu.className)
                         )}
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400">
@@ -2137,11 +2449,31 @@ export function ClassesView({
                         )}
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-700 dark:text-slate-200">
-                        {sub.gradeLevel}
+                        {editRow ? (
+                          <select
+                            aria-label={`แก้ไขระดับชั้น ${sub.subjectName}`}
+                            value={editRow.gradeLevel}
+                            onChange={(e) =>
+                              setSubjectEdits((prev) => ({
+                                ...prev,
+                                [sub.id]: { ...editRow, gradeLevel: e.target.value },
+                              }))
+                            }
+                            className="rounded border border-indigo-300 bg-white px-2 py-1 text-xs text-slate-900 dark:border-indigo-700 dark:bg-slate-900 dark:text-white"
+                          >
+                            {knownClassrooms.map((cls) => (
+                              <option key={cls} value={cls}>
+                                {formatClassroomShort(cls)}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          formatClassroomShort(sub.gradeLevel)
+                        )}
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-300">
                         {editRow ? (
-                          <input
+                          <select
                             aria-label={`แก้ไขครูผู้สอน ${sub.subjectName}`}
                             value={editRow.teacherName ?? ''}
                             onChange={(e) =>
@@ -2150,8 +2482,15 @@ export function ClassesView({
                                 [sub.id]: { ...editRow, teacherName: e.target.value },
                               }))
                             }
-                            className="w-full rounded border border-indigo-300 bg-white px-2 py-1 text-xs dark:border-indigo-700 dark:bg-slate-900 dark:text-white"
-                          />
+                            className="rounded border border-indigo-300 bg-white px-2 py-1 text-xs text-slate-900 dark:border-indigo-700 dark:bg-slate-900 dark:text-white"
+                          >
+                            <option value="">-- ไม่ระบุ --</option>
+                            {teacherNames.map((name) => (
+                              <option key={name} value={name}>
+                                {name}
+                              </option>
+                            ))}
+                          </select>
                         ) : (
                           sub.teacherName || '—'
                         )}

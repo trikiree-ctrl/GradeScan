@@ -7,7 +7,11 @@ import {
   UserPlus,
 } from 'lucide-react';
 import type { ChoiceOption, Quiz, Student, SystemSettings } from '../types/omr';
-import { normalizeThaiClassName } from '../utils/normalization';
+import {
+  collectKnownClassrooms,
+  formatClassroomLabel,
+  normalizeThaiClassName,
+} from '../utils/normalization';
 import { getActiveChoices } from '../utils/omrAnalytics';
 import { drawPrintableOmrSheet } from '../utils/omrCanvasRenderer';
 
@@ -34,6 +38,10 @@ export function AnswerSheetView({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const digits = settings.studentIdDigits;
+
+  const knownClassrooms = useMemo(() => {
+    return collectKnownClassrooms(students, [{ gradeLevel: activeQuiz.className }]);
+  }, [students, activeQuiz.className]);
 
   const matchedStudent = useMemo(() => {
     const clean = typedStudentCode.replace(/\D/g, '');
@@ -274,14 +282,18 @@ export function AnswerSheetView({
                     placeholder="ชื่อ-สกุลนักเรียนใหม่"
                     className="sm:col-span-5 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs text-slate-900 dark:border-amber-700 dark:bg-slate-900 dark:text-white"
                   />
-                  <input
+                  <select
                     aria-label="ห้องเรียนนักเรียนใหม่"
-                    type="text"
                     value={quickAddClass}
                     onChange={(e) => setQuickAddClass(e.target.value)}
-                    placeholder="ห้องเรียน เช่น ม.1/1"
                     className="sm:col-span-4 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs text-slate-900 dark:border-amber-700 dark:bg-slate-900 dark:text-white"
-                  />
+                  >
+                    {knownClassrooms.map((cls) => (
+                      <option key={cls} value={cls}>
+                        {formatClassroomLabel(cls)}
+                      </option>
+                    ))}
+                  </select>
                   <button
                     type="submit"
                     className="sm:col-span-3 inline-flex items-center justify-center gap-1.5 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700"

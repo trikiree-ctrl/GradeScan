@@ -436,6 +436,22 @@ export default function App() {
     triggerHud('ลบชุดข้อสอบแล้ว', performance.now() - t0);
   };
 
+  const handleBulkDeleteQuizzes = (quizIds: string[]) => {
+    if (quizzes.length <= 1 || quizIds.length === 0) return;
+    const t0 = performance.now();
+    const set = new Set(quizIds);
+    let remaining = quizzes.filter((q) => !set.has(q.id));
+    if (remaining.length === 0) {
+      remaining = [quizzes[0]];
+    }
+    setQuizzes(remaining);
+    setScans((prev) => prev.filter((s) => !set.has(s.quizId)));
+    if (set.has(activeQuizId) && remaining[0]) {
+      setActiveQuizId(remaining[0].id);
+    }
+    triggerHud(`ลบชุดข้อสอบ ${quizIds.length} รายการแล้ว`, performance.now() - t0);
+  };
+
   // Students CRUD + Bulk
   const handleAddStudent = (student: Student) => {
     const t0 = performance.now();
@@ -827,6 +843,8 @@ export default function App() {
             <QuizzesView
               quizzes={quizzes}
               subjects={subjects}
+              students={students}
+              teachers={teachers}
               settings={settings}
               activeQuizId={activeQuiz.id}
               onSelectQuiz={setActiveQuizId}
@@ -834,6 +852,7 @@ export default function App() {
               onUpdateAnswerKey={handleUpdateAnswerKey}
               onBulkUpdateAnswerKey={handleBulkUpdateAnswerKey}
               onDeleteQuiz={handleDeleteQuiz}
+              onBulkDeleteQuizzes={handleBulkDeleteQuizzes}
             />
           )}
 

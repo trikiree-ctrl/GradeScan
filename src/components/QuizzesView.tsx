@@ -1,18 +1,27 @@
-import { useState } from 'react';
-import { Check, Plus, Shuffle, Trash2 } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Check, CheckSquare, Plus, Shuffle, Trash2, X } from 'lucide-react';
 import type {
   ChoiceOption,
   QuestionCount,
   Quiz,
+  Student,
   Subject,
   SystemSettings,
+  Teacher,
 } from '../types/omr';
-import { normalizeThaiClassName } from '../utils/normalization';
+import {
+  collectKnownClassrooms,
+  formatClassroomLabel,
+  formatClassroomShort,
+  normalizeThaiClassName,
+} from '../utils/normalization';
 import { getActiveChoices } from '../utils/omrAnalytics';
 
 interface QuizzesViewProps {
   quizzes: Quiz[];
   subjects: Subject[];
+  students?: Student[];
+  teachers?: Teacher[];
   settings: SystemSettings;
   activeQuizId: string;
   onSelectQuiz: (quizId: string) => void;
@@ -27,11 +36,14 @@ interface QuizzesViewProps {
     answerKey: Record<number, ChoiceOption>
   ) => void;
   onDeleteQuiz: (quizId: string) => void;
+  onBulkDeleteQuizzes?: (quizIds: string[]) => void;
 }
 
 export function QuizzesView({
   quizzes,
   subjects,
+  students = [],
+  teachers = [],
   settings,
   activeQuizId,
   onSelectQuiz,
@@ -39,12 +51,15 @@ export function QuizzesView({
   onUpdateAnswerKey,
   onBulkUpdateAnswerKey,
   onDeleteQuiz,
+  onBulkDeleteQuizzes,
 }: QuizzesViewProps) {
   const [showCreate, setShowCreate] = useState(false);
   const [title, setTitle] = useState('');
   const [subject, setSubject] = useState(subjects[0]?.subjectName ?? '');
   const [subjectCode, setSubjectCode] = useState(subjects[0]?.subjectCode ?? '');
-  const [className, setClassName] = useState('ม.1/1');
+  const [className, setClassName] = useState('ประถมศึกษาปีที่ 1/1');
+  const [selectedSubjectId, setSelectedSubjectId] = useState<string>(subjects[0]?.id ?? '__custom__');
+  const [isCustomClass, setIsCustomClass] = useState(false);
   const [questionCount, setQuestionCount] = useState<QuestionCount>(
     settings.defaultQuestionCount
   );
@@ -58,8 +73,65 @@ export function QuizzesView({
   );
   const [formError, setFormError] = useState<string | null>(null);
 
+  // Multi-select state for quizzes
+  const [selectedQuizIds, setSelectedQuizIds] = useState<Set<string>>(new Set());
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+
   const activeQuiz = quizzes.find((q) => q.id === activeQuizId) ?? quizzes[0];
   const choices = getActiveChoices(activeQuiz.choiceCount);
+
+  const knownClassrooms = useMemo(() => {
+    return collectKnownClassrooms(students, subjects, teachers);
+  }, [students, subjects, teachers]);
+
+  const allVisibleSelected =
+    quizzes.length > 0 && quizzes.every((q) => selectedQuizIds.has(q.id));
+
+  const toggleSelectAll = () => {
+    if (allVisibleSelected) {
+      setSelectedQuizIds(new Set());
+      setConfirmBulkDelete(false);
+    } else {
+      setSelectedQuizIds(new Set(quizzes.map((q) => q.id)));
+    }
+  };
+
+  const toggleQuizSelection = (id: string) => {
+    setSelectedQuizIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+    setConfirmBulkDelete(false);
+  };
+
+  const handleConfirmBulkDeleteQuizzes = () => {
+    const ids = Array.from(selectedQuizIds);
+    if (ids.length === 0) return;
+    if (onBulkDeleteQuizzes) {
+      onBulkDeleteQuizzes(ids);
+    } else {
+      for (const id of ids) onDeleteQuiz(id);
+    }
+    setSelectedQuizIds(new Set());
+    setConfirmBulkDelete(false);
+  };
+
+  const handleSelectSubjectTemplate = (subId: string) => {
+    setSelectedSubjectId(subId);
+    if (subId === '__custom__') {
+      return;
+    }
+    const found = subjects.find((s) => s.id === subId);
+    if (found) {
+      setSubject(found.subjectName);
+      setSubjectCode(found.subjectCode);
+      setClassName(found.gradeLevel);
+      setIsCustomClass(false);
+      setTitle(`ประเมินผล ${found.subjectName} (${formatClassroomShort(found.gradeLevel)})`);
+    }
+  };
 
   const handleCreateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -142,6 +214,30 @@ export function QuizzesView({
             onSubmit={handleCreateSubmit}
             className="mt-6 grid grid-cols-1 gap-4 rounded-xl border border-slate-200 bg-slate-50/70 p-5 sm:grid-cols-2 lg:grid-cols-3 dark:border-slate-700 dark:bg-slate-800/40"
           >
+            {/* Subject Selector Dropdown */}
+            <div className="sm:col-span-2 lg:col-span-3 rounded-lg border border-indigo-100 bg-indigo-50/50 p-3 dark:border-indigo-900/40 dark:bg-indigo-950/20">
+              <label
+                htmlFor="quiz-subject-select"
+                className="block text-xs font-semibold text-indigo-900 dark:text-indigo-200"
+              >
+                เลือกรายวิชาจากฐานข้อมูล ({subjects.length} รายวิชา)
+              </label>
+              <select
+                id="quiz-subject-select"
+                aria-label="เลือกรายวิชา"
+                value={selectedSubjectId}
+                onChange={(e) => handleSelectSubjectTemplate(e.target.value)}
+                className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 focus:border-indigo-600 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+              >
+                <option value="__custom__">+ พิมพ์ระบุรายวิชาเอง (Custom)...</option>
+                {subjects.map((sub) => (
+                  <option key={sub.id} value={sub.id}>
+                    {sub.subjectCode} · {sub.subjectName} ({formatClassroomShort(sub.gradeLevel)}){sub.teacherName ? ` — ${sub.teacherName}` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <div>
               <label
                 htmlFor="quiz-title-input"
@@ -154,59 +250,83 @@ export function QuizzesView({
                 type="text"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="เช่น สอบย่อยครั้งที่ 2 บทที่ 3"
+                placeholder="เช่น ประเมินผลปลายภาค วิทยาศาสตร์"
                 className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
               />
             </div>
 
             <div>
               <label
-                htmlFor="quiz-subject-input"
+                htmlFor="quiz-subject-name-input"
                 className="block text-xs font-medium text-slate-700 dark:text-slate-300"
               >
-                รายวิชา (เลือกจากหลักสูตรหรือพิมพ์เอง)
+                ชื่อรายวิชา
               </label>
               <input
-                id="quiz-subject-input"
-                list="quiz-subject-suggestions"
+                id="quiz-subject-name-input"
                 type="text"
                 value={subject}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setSubject(val);
-                  const found = subjects.find((s) => s.subjectName === val);
-                  if (found) setSubjectCode(found.subjectCode);
-                }}
-                placeholder="เช่น ภาษาไทย / คณิตศาสตร์"
+                onChange={(e) => setSubject(e.target.value)}
+                placeholder="เช่น วิทยาศาสตร์และเทคโนโลยี"
                 className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
               />
-              <datalist id="quiz-subject-suggestions">
-                {subjects.map((sub) => (
-                  <option key={sub.id} value={sub.subjectName}>
-                    {sub.subjectCode}
-                  </option>
-                ))}
-              </datalist>
             </div>
 
             <div>
               <label
-                htmlFor="quiz-class-input"
+                htmlFor="quiz-code-input"
                 className="block text-xs font-medium text-slate-700 dark:text-slate-300"
               >
-                ระดับชั้น / ห้อง (แปลงมาตรฐานอัตโนมัติ)
+                รหัสวิชา (อ้างอิงหลักสูตร)
               </label>
               <input
-                id="quiz-class-input"
+                id="quiz-code-input"
                 type="text"
-                value={className}
-                onChange={(e) => setClassName(e.target.value)}
-                placeholder="เช่น ป 6/1 หรือ ม.1/2"
-                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-600 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                value={subjectCode}
+                onChange={(e) => setSubjectCode(e.target.value)}
+                placeholder="เช่น ว21102"
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm text-slate-900 focus:border-blue-600 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
               />
-              <span className="mt-1 block text-[11px] text-slate-500 dark:text-slate-400">
-                มาตรฐาน: {normalizeThaiClassName(className)}
-              </span>
+            </div>
+
+            <div>
+              <label
+                htmlFor="quiz-class-select"
+                className="block text-xs font-medium text-slate-700 dark:text-slate-300"
+              >
+                ระดับชั้น / ห้องเรียน (ดรอปดาวน์)
+              </label>
+              <select
+                id="quiz-class-select"
+                aria-label="เลือกระดับชั้น/ห้องเรียน"
+                value={isCustomClass ? '__custom__' : className}
+                onChange={(e) => {
+                  if (e.target.value === '__custom__') {
+                    setIsCustomClass(true);
+                  } else {
+                    setIsCustomClass(false);
+                    setClassName(e.target.value);
+                  }
+                }}
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+              >
+                {knownClassrooms.map((cls) => (
+                  <option key={cls} value={cls}>
+                    {formatClassroomLabel(cls)}
+                  </option>
+                ))}
+                <option value="__custom__">+ ระบุห้องเรียนอื่น...</option>
+              </select>
+              {isCustomClass && (
+                <input
+                  type="text"
+                  aria-label="พิมพ์ห้องเรียนที่ต้องการ"
+                  value={className}
+                  onChange={(e) => setClassName(e.target.value)}
+                  placeholder="เช่น ม.4/1"
+                  className="mt-1.5 w-full rounded-lg border border-indigo-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 dark:border-indigo-700 dark:bg-slate-900 dark:text-white"
+                />
+              )}
             </div>
 
             <div>
@@ -337,48 +457,135 @@ export function QuizzesView({
           </form>
         )}
 
+        {/* Quiz Multi-Select Action Bar */}
+        {(selectedQuizIds.size > 0 || quizzes.length > 1) && (
+          <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-2.5 dark:border-slate-800 dark:bg-slate-800/40">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="select-all-quizzes-cb"
+                aria-label="เลือกชุดข้อสอบทั้งหมด"
+                checked={allVisibleSelected}
+                onChange={toggleSelectAll}
+                className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-600"
+              />
+              <label htmlFor="select-all-quizzes-cb" className="text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer">
+                เลือกทั้งหมด ({quizzes.length} ชุด)
+              </label>
+              {selectedQuizIds.size > 0 && (
+                <span className="ml-2 font-mono tabular-nums text-xs font-semibold text-blue-700 dark:text-blue-300">
+                  (เลือกแล้ว {selectedQuizIds.size} ชุด)
+                </span>
+              )}
+            </div>
+
+            {selectedQuizIds.size > 0 && (
+              <div className="flex items-center gap-2">
+                {!confirmBulkDelete ? (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmBulkDelete(true)}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>ลบชุดข้อสอบที่เลือก ({selectedQuizIds.size})</span>
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-2 rounded-lg border border-rose-300 bg-rose-50 px-3 py-1 dark:border-rose-800 dark:bg-rose-950/60">
+                    <span className="text-xs font-semibold text-rose-800 dark:text-rose-200">
+                      ยืนยันลบ {selectedQuizIds.size} ชุด?
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleConfirmBulkDeleteQuizzes}
+                      className="rounded-md bg-rose-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-rose-700"
+                    >
+                      ยืนยัน
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmBulkDelete(false)}
+                      className="rounded-md bg-white px-2.5 py-1 text-xs font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                    >
+                      ยกเลิก
+                    </button>
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedQuizIds(new Set());
+                    setConfirmBulkDelete(false);
+                  }}
+                  aria-label="ล้างการเลือกชุดข้อสอบ"
+                  className="rounded-lg p-1.5 text-slate-500 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-700"
+                >
+                  <X className="h-4 w-4" aria-hidden="true" />
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Quiz Selector List */}
-        <div className="mt-6 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
           {quizzes.map((quiz) => {
             const isSelected = quiz.id === activeQuiz.id;
+            const isChecked = selectedQuizIds.has(quiz.id);
             return (
               <div
                 key={quiz.id}
                 className={`flex items-start justify-between rounded-xl border p-4 transition-colors ${
-                  isSelected
+                  isChecked
+                    ? 'border-indigo-500 bg-indigo-50/40 dark:border-indigo-500 dark:bg-indigo-950/30'
+                    : isSelected
                     ? 'border-blue-600 bg-blue-50/50 dark:border-blue-500 dark:bg-blue-950/30'
                     : 'border-slate-200 bg-white hover:border-slate-300 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-slate-700'
                 }`}
               >
-                <button
-                  type="button"
-                  onClick={() => onSelectQuiz(quiz.id)}
-                  className="flex-1 text-left"
-                >
-                  <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-                    <span>{quiz.subject}</span>
-                    <span aria-hidden="true">·</span>
-                    <span className="font-mono tabular-nums">{quiz.questionCount} ข้อ</span>
-                    <span aria-hidden="true">·</span>
-                    <span>{quiz.className}</span>
-                  </div>
-                  <div className="mt-1 flex items-center gap-2 font-semibold text-slate-900 dark:text-white">
-                    {isSelected && (
-                      <Check className="h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" aria-hidden="true" />
-                    )}
-                    <span className="line-clamp-1">{quiz.title}</span>
-                  </div>
-                  <div className="mt-1 text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
-                    คะแนนเต็ม {quiz.questionCount * quiz.pointsPerQuestion} ({quiz.pointsPerQuestion} คะแนน/ข้อ · ผ่าน {quiz.passThresholdPct ?? 50}%{(quiz.wrongPenalty ?? 0) > 0 ? ` · หักผิด -${quiz.wrongPenalty}` : ''})
-                  </div>
-                </button>
+                <div className="flex items-start gap-3 flex-1">
+                  <input
+                    type="checkbox"
+                    aria-label={`เลือกชุดข้อสอบ ${quiz.title}`}
+                    checked={isChecked}
+                    onChange={(e) => {
+                      e.stopPropagation();
+                      toggleQuizSelection(quiz.id);
+                    }}
+                    className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-600 shrink-0"
+                  />
+
+                  <button
+                    type="button"
+                    onClick={() => onSelectQuiz(quiz.id)}
+                    className="flex-1 text-left"
+                  >
+                    <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                      <span>{quiz.subject}</span>
+                      <span aria-hidden="true">·</span>
+                      <span className="font-mono tabular-nums">{quiz.questionCount} ข้อ</span>
+                      <span aria-hidden="true">·</span>
+                      <span>{formatClassroomShort(quiz.className)}</span>
+                    </div>
+                    <div className="mt-1 flex items-center gap-2 font-semibold text-slate-900 dark:text-white">
+                      {isSelected && (
+                        <Check className="h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" aria-hidden="true" />
+                      )}
+                      <span className="line-clamp-1">{quiz.title}</span>
+                    </div>
+                    <div className="mt-1 text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                      คะแนนเต็ม {quiz.questionCount * quiz.pointsPerQuestion} ({quiz.pointsPerQuestion} คะแนน/ข้อ · ผ่าน {quiz.passThresholdPct ?? 50}%{(quiz.wrongPenalty ?? 0) > 0 ? ` · หักผิด -${quiz.wrongPenalty}` : ''})
+                    </div>
+                  </button>
+                </div>
 
                 {quizzes.length > 1 && (
                   <button
                     type="button"
                     onClick={() => onDeleteQuiz(quiz.id)}
                     aria-label={`ลบชุดข้อสอบ ${quiz.title}`}
-                    className="ml-2 rounded-md p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40 dark:hover:text-red-400"
+                    className="ml-2 rounded-md p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40 dark:hover:text-red-400 shrink-0"
                   >
                     <Trash2 className="h-4 w-4" aria-hidden="true" />
                   </button>

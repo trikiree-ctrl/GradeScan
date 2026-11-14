@@ -5,6 +5,10 @@ import {
   isInvalidStudentRecord,
   parseStudentCsv,
   exportScansToCsv,
+  collectKnownClassrooms,
+  formatClassroomShort,
+  formatClassroomLabel,
+  STANDARD_THAI_LEARNING_AREAS,
 } from './normalization';
 import {
   gradeResponse,
@@ -558,5 +562,28 @@ test('Excel (.xlsx) multi-sheet & banner-row parser imports HRMS, Subjects, and 
   assert.equal(tsvRes.teachers.length, 1);
   assert.equal(tsvRes.teachers[0].fullName, 'นางสาวนรีกานต์ แก่นมั่น');
   assert.equal(tsvRes.skippedVacantCount, 1);
+});
+
+test('collectKnownClassrooms and formatClassroomLabel format Thai school rooms correctly', () => {
+  assert.equal(formatClassroomShort('ประถมศึกษาปีที่ 1/1'), 'ป.1/1');
+  assert.equal(formatClassroomShort('มัธยมศึกษาปีที่ 3'), 'ม.3');
+  assert.equal(formatClassroomLabel('ประถมศึกษาปีที่ 1/1'), 'ป.1/1 (ประถมศึกษาปีที่ 1/1)');
+
+  const rooms = collectKnownClassrooms(
+    [{ className: 'ม.2' }, { className: 'ป.1/2' }],
+    [{ gradeLevel: 'ป.5/1' }],
+    [{ homeroomClass: 'ม.3' }]
+  );
+
+  assert.ok(rooms.includes('ประถมศึกษาปีที่ 1/1'));
+  assert.ok(rooms.includes('ประถมศึกษาปีที่ 5/1'));
+  assert.ok(rooms.includes('มัธยมศึกษาปีที่ 3'));
+  // Ensure primary comes before secondary
+  const pIdx = rooms.indexOf('ประถมศึกษาปีที่ 1/1');
+  const mIdx = rooms.indexOf('มัธยมศึกษาปีที่ 1');
+  assert.ok(pIdx < mIdx);
+
+  assert.equal(STANDARD_THAI_LEARNING_AREAS.length, 9);
+  assert.ok(STANDARD_THAI_LEARNING_AREAS.includes('วิทยาศาสตร์และเทคโนโลยี'));
 });
 

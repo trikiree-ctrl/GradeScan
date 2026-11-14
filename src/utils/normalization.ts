@@ -218,3 +218,81 @@ export function parseStudentCsv(
 
   return results;
 }
+
+export const STANDARD_THAI_LEARNING_AREAS = [
+  'ภาษาไทย',
+  'คณิตศาสตร์',
+  'วิทยาศาสตร์และเทคโนโลยี',
+  'สังคมศึกษา ศาสนา และวัฒนธรรม',
+  'สุขศึกษาและพลศึกษา',
+  'ศิลปะ',
+  'การงานอาชีพ',
+  'ภาษาต่างประเทศ',
+  'กิจกรรมพัฒนาผู้เรียน',
+] as const;
+
+export const STANDARD_SCHOOL_CLASSROOMS = [
+  'ประถมศึกษาปีที่ 1/1',
+  'ประถมศึกษาปีที่ 1/2',
+  'ประถมศึกษาปีที่ 2/1',
+  'ประถมศึกษาปีที่ 2/2',
+  'ประถมศึกษาปีที่ 3/1',
+  'ประถมศึกษาปีที่ 3/2',
+  'ประถมศึกษาปีที่ 4',
+  'ประถมศึกษาปีที่ 5/1',
+  'ประถมศึกษาปีที่ 5/2',
+  'ประถมศึกษาปีที่ 6',
+  'มัธยมศึกษาปีที่ 1',
+  'มัธยมศึกษาปีที่ 2',
+  'มัธยมศึกษาปีที่ 3',
+] as const;
+
+export function formatClassroomShort(cls: string): string {
+  const normalized = normalizeThaiClassName(cls);
+  const pMatch = normalized.match(/ประถมศึกษาปีที่\s*(\d+)(?:\/(\d+))?/);
+  if (pMatch) {
+    return `ป.${pMatch[1]}${pMatch[2] ? `/${pMatch[2]}` : ''}`;
+  }
+  const mMatch = normalized.match(/มัธยมศึกษาปีที่\s*(\d+)(?:\/(\d+))?/);
+  if (mMatch) {
+    return `ม.${mMatch[1]}${mMatch[2] ? `/${mMatch[2]}` : ''}`;
+  }
+  return normalized;
+}
+
+export function formatClassroomLabel(cls: string): string {
+  const short = formatClassroomShort(cls);
+  const full = normalizeThaiClassName(cls);
+  if (short !== full) {
+    return `${short} (${full})`;
+  }
+  return full;
+}
+
+export function collectKnownClassrooms(
+  students: { className: string }[] = [],
+  subjects: { gradeLevel: string }[] = [],
+  teachers: { homeroomClass?: string }[] = []
+): string[] {
+  const set = new Set<string>(STANDARD_SCHOOL_CLASSROOMS);
+  for (const s of students) {
+    if (s.className) set.add(normalizeThaiClassName(s.className));
+  }
+  for (const sub of subjects) {
+    if (sub.gradeLevel) set.add(normalizeThaiClassName(sub.gradeLevel));
+  }
+  for (const t of teachers) {
+    if (t.homeroomClass) set.add(normalizeThaiClassName(t.homeroomClass));
+  }
+  return Array.from(set).sort((a, b) => {
+    const orderScore = (name: string): number => {
+      const p = name.match(/ประถมศึกษาปีที่\s*(\d+)(?:\/(\d+))?/);
+      if (p) return 100 + Number(p[1]) * 10 + (p[2] ? Number(p[2]) : 0);
+      const m = name.match(/มัธยมศึกษาปีที่\s*(\d+)(?:\/(\d+))?/);
+      if (m) return 200 + Number(m[1]) * 10 + (m[2] ? Number(m[2]) : 0);
+      return 300;
+    };
+    const diff = orderScore(a) - orderScore(b);
+    return diff !== 0 ? diff : a.localeCompare(b, 'th');
+  });
+}
