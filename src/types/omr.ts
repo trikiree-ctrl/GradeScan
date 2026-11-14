@@ -31,15 +31,22 @@ export interface Student {
 
 export interface Teacher {
   id: string;
-  teacherCode: string; // HRMS / Employee / Teacher ID
+  teacherCode: string; // HRMS / Employee / Position ID
   fullName: string;
   position: string;
-  department: string; // กลุ่มสาระการเรียนรู้
+  department: string; // กลุ่มสาระการเรียนรู้ / กลุ่มวิชาเอก
   homeroomClass?: string;
+  positionNumber?: string; // ตำแหน่งเลขที่ (HRMS)
+  payrollId?: string; // เลขที่จ่ายตรง (HRMS)
+  academicRank?: string; // ระดับ/อันดับ เช่น คศ. 1, คศ. 2, คศ. 3, ครูผู้ช่วย
+  major?: string; // กลุ่มวิชาเอกตามมาตรฐานวิชาเอก
+  positionStatus?: string; // สถานะตำแหน่ง เช่น มีคนถือครอง
+  schoolCode?: string;
+  schoolName?: string;
   citizenId?: string;
   email?: string;
   phone?: string;
-  sourceSystem?: 'manual' | 'hrms' | 'csv' | 'json';
+  sourceSystem?: 'manual' | 'hrms' | 'csv' | 'xlsx' | 'json';
   createdAt: string;
 }
 
@@ -50,9 +57,10 @@ export interface Subject {
   learningArea: string;
   gradeLevel: string;
   credits: number;
+  periodsPerWeek?: number; // จำนวนคาบ/สัปดาห์ตามตารางสอน
   teacherCode?: string;
   teacherName?: string;
-  sourceSystem?: 'manual' | 'dmc' | 'hrms' | 'csv' | 'json';
+  sourceSystem?: 'manual' | 'dmc' | 'hrms' | 'csv' | 'xlsx' | 'json';
   createdAt: string;
 }
 

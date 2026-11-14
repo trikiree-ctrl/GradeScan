@@ -21,17 +21,29 @@ import {
   areCornersWellAligned,
   type PixelBuffer,
 } from './omrEngine';
+import * as XLSX from 'xlsx';
+import {
+  BAN_APHON_RAW_HRMS_ROWS,
+  buildBanAphonTimetableSubjects,
+} from './banAphonPreset';
 import {
   parseDmcStudentsJson,
   parseHrmsTeachersJson,
+  parseHrmsTeachersWithReport,
   parseSubjectsJson,
   autoDetectAndParseJsonImport,
+  buildBanAphonFullImportResult,
   exportFullSystemBackupJson,
   exportPostScanScoresJson,
   SAMPLE_DMC_JSON,
   SAMPLE_HRMS_TEACHERS_JSON,
   SAMPLE_SUBJECTS_JSON,
 } from './importExport';
+import {
+  inspectTextOrSpreadsheetImport,
+  inspectWorkbookImport,
+  parseExcelWorkbook,
+} from './spreadsheetImport';
 import {
   computeThaiGrade,
   DEFAULT_SYSTEM_SETTINGS,
@@ -450,3 +462,101 @@ test('OMR CV engine supports configurable 5-digit and 6-digit student ID grids',
   assert.equal(res6.detectedStudentCode, '650412');
   assert.equal(res6.correctCount, 20);
 });
+
+test('Real OBEC HRMS parser extracts 18 Ban Aphon civil servants and skips vacant position 4854', () => {
+  const report = parseHrmsTeachersWithReport(BAN_APHON_RAW_HRMS_ROWS);
+  assert.equal(report.teachers.length, 18);
+  assert.equal(report.skippedVacantCount, 1);
+  assert.ok(report.skippedPositionNumbers[0].includes('4854'));
+  assert.equal(
+    report.teachers.some((t) => t.positionNumber === '4854' || t.teacherCode === '4854'),
+    false
+  );
+
+  const director = report.teachers.find((t) => t.positionNumber === '8197');
+  assert.ok(director);
+  assert.equal(director.fullName, 'นางสาววรรณฤดี เพิ่มทรัพย์');
+  assert.equal(director.position, 'ผู้อำนวยการสถานศึกษา');
+
+  const adirek = report.teachers.find((t) => t.positionNumber === '8209');
+  assert.ok(adirek);
+  assert.equal(adirek.fullName, 'นายอดิเรก โพธิ์ธรรม');
+  assert.equal(adirek.academicRank, 'คศ. 3');
+  assert.equal(adirek.major, 'วิทยาศาสตร์ (ประถมศึกษา/ม.ต้น)');
+  assert.equal(adirek.homeroomClass, 'มัธยมศึกษาปีที่ 1');
+});
+
+test('Ban Aphon preset and timetable subjects split per grade/room and teacher without collapsed ranges', () => {
+  const timetableSubjects = buildBanAphonTimetableSubjects();
+  assert.ok(timetableSubjects.length >= 120);
+  assert.equal(
+    timetableSubjects.some((s) => s.subjectName.includes('ป.5–ม.3') || s.subjectName.includes('ป.1–ม.3')),
+    false
+  );
+
+  // Verify Science / Math in separate rooms keep separate teacher assignments and period counts
+  const mathP51 = timetableSubjects.find(
+    (s) => s.subjectName === 'คณิตศาสตร์' && s.gradeLevel === 'ประถมศึกษาปีที่ 5/1'
+  );
+  const mathP52 = timetableSubjects.find(
+    (s) => s.subjectName === 'คณิตศาสตร์' && s.gradeLevel === 'ประถมศึกษาปีที่ 5/2'
+  );
+  assert.ok(mathP51 && mathP52);
+  assert.equal(mathP51.teacherName, 'นายอดิเรก โพธิ์ธรรม');
+  assert.equal(mathP51.periodsPerWeek, 4);
+  assert.notEqual(mathP51.subjectCode, mathP52.subjectCode);
+
+  const fullPreset = buildBanAphonFullImportResult();
+  assert.equal(fullPreset.importResult.teachers.length, 20); // 18 HRMS + 2 timetable teachers
+  assert.equal(fullPreset.skippedVacantCount, 1);
+  assert.equal(fullPreset.schoolMeta.schoolCode, '1032650660');
+  assert.equal(fullPreset.schoolMeta.schoolName, 'โรงเรียนบ้านอาโพน');
+});
+
+test('Excel (.xlsx) multi-sheet & banner-row parser imports HRMS, Subjects, and Students accurately', () => {
+  const wb = XLSX.utils.book_new();
+
+  // Sheet 1: HRMS with a Thai school banner row above the real header row + vacant row
+  const hrmsMatrix = [
+    ['บัญชีรายละเอียดข้าราชการครูและบุคลากรทางการศึกษา โรงเรียนบ้านอาโพน (1032650660)'],
+    [],
+    ['ตำแหน่งเลขที่', 'คำนำหน้าชื่อ', 'ชื่อ', 'นามสกุล', 'ชื่อตำแหน่ง', 'ระดับ/อันดับ', 'กลุ่มวิชาเอกตามมาตรฐานวิชาเอก', 'สถานะตำแหน่ง'],
+    ['8209', 'นาย', 'อดิเรก', 'โพธิ์ธรรม', 'ครู', 'คศ. 3', 'วิทยาศาสตร์', 'มีคนถือครอง'],
+    ['4854', '', '', '', 'ครู', '', '', 'ว่างรอเกลี่ย'],
+    ['9329', 'นาง', 'ถาวร', 'สิงห์โตทอง', 'ครู', 'คศ. 2', 'คณิตศาสตร์', 'มีคนถือครอง'],
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(hrmsMatrix), 'HRMS');
+
+  // Sheet 2: Timetable subjects with duplicate base subject code across 2 rooms
+  const subjectSheet = XLSX.utils.json_to_sheet([
+    { รหัสวิชา: 'ค15101', ชื่อวิชา: 'คณิตศาสตร์', กลุ่มสาระการเรียนรู้: 'คณิตศาสตร์', ระดับชั้น: 'ป.5/1', 'คาบ/สัปดาห์': 4, หน่วยกิต: 1.0, ครูผู้สอน: 'นายอดิเรก โพธิ์ธรรม' },
+    { รหัสวิชา: 'ค15101', ชื่อวิชา: 'คณิตศาสตร์', กลุ่มสาระการเรียนรู้: 'คณิตศาสตร์', ระดับชั้น: 'ป.5/2', 'คาบ/สัปดาห์': 4, หน่วยกิต: 1.0, ครูผู้สอน: 'นายอดิเรก โพธิ์ธรรม' },
+  ]);
+  XLSX.utils.book_append_sheet(wb, subjectSheet, 'Timetable');
+
+  const outBuf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  const parsedWb = parseExcelWorkbook(outBuf, 'ban_aphon.xlsx');
+  assert.deepEqual(parsedWb.sheetNames, ['HRMS', 'Timetable']);
+
+  const hrmsRes = inspectWorkbookImport(parsedWb, 'HRMS', 'auto', 4);
+  assert.equal(hrmsRes.detectedType, 'hrms_teachers');
+  assert.equal(hrmsRes.teachers.length, 2);
+  assert.equal(hrmsRes.skippedVacantCount, 1);
+  assert.equal(hrmsRes.teachers[0].academicRank, 'คศ. 3');
+
+  const allRes = inspectWorkbookImport(parsedWb, '__ALL__', 'auto', 4);
+  assert.equal(allRes.teachers.length, 2);
+  assert.equal(allRes.subjects.length, 2);
+  assert.equal(allRes.subjects[0].gradeLevel, 'ประถมศึกษาปีที่ 5/1');
+  assert.equal(allRes.subjects[1].gradeLevel, 'ประถมศึกษาปีที่ 5/2');
+
+  // Also test TSV paste from Excel for HRMS
+  const tsvText =
+    'ตำแหน่งเลขที่\tคำนำหน้าชื่อ\tชื่อ\tนามสกุล\tชื่อตำแหน่ง\tสถานะตำแหน่ง\n10012\tนางสาว\tนรีกานต์\tแก่นมั่น\tครู\tมีคนถือครอง\n4854\t\t\t\tครู\tว่างรอเกลี่ย';
+  const tsvRes = inspectTextOrSpreadsheetImport(tsvText, 'auto', 4);
+  assert.equal(tsvRes.detectedType, 'hrms_teachers');
+  assert.equal(tsvRes.teachers.length, 1);
+  assert.equal(tsvRes.teachers[0].fullName, 'นางสาวนรีกานต์ แก่นมั่น');
+  assert.equal(tsvRes.skippedVacantCount, 1);
+});
+

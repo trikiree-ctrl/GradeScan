@@ -30,7 +30,10 @@ import type {
   SystemSettings,
   Teacher,
 } from './types/omr';
-import type { AutoJsonImportResult } from './utils/importExport';
+import {
+  buildBanAphonFullImportResult,
+  type AutoJsonImportResult,
+} from './utils/importExport';
 import { computeStateHash } from './utils/normalization';
 import {
   computeItemAnalysis,
@@ -77,6 +80,19 @@ function mergeByKey<T>(
   }
   for (const item of incoming) {
     map.set(String(item[keyField]), item);
+  }
+  return Array.from(map.values());
+}
+
+function mergeSubjectsComposite(existing: Subject[], incoming: Subject[]): Subject[] {
+  const map = new Map<string, Subject>();
+  const keyOf = (s: Subject) =>
+    `${s.subjectCode}::${s.gradeLevel}::${s.teacherName ?? s.teacherCode ?? ''}`;
+  for (const item of existing) {
+    map.set(keyOf(item), item);
+  }
+  for (const item of incoming) {
+    map.set(keyOf(item), item);
   }
   return Array.from(map.values());
 }
@@ -545,7 +561,7 @@ export default function App() {
 
   const handleBulkAddSubjects = (added: Subject[]) => {
     const t0 = performance.now();
-    setSubjects((prev) => mergeByKey(prev, added, 'subjectCode'));
+    setSubjects((prev) => mergeSubjectsComposite(prev, added));
     triggerHud(`เพิ่มรายวิชา ${added.length} วิชาสำเร็จ`, performance.now() - t0);
   };
 
@@ -571,7 +587,7 @@ export default function App() {
     setSubjects((prev) =>
       mode === 'replace'
         ? imported
-        : mergeByKey(prev, imported, 'subjectCode')
+        : mergeSubjectsComposite(prev, imported)
     );
     triggerHud(`นำเข้ารายวิชา ${imported.length} วิชา`, performance.now() - t0);
   };
@@ -600,7 +616,7 @@ export default function App() {
         setTeachers((prev) => mergeByKey(prev, backup.teachers, 'teacherCode'));
       }
       if (backup.subjects.length > 0) {
-        setSubjects((prev) => mergeByKey(prev, backup.subjects, 'subjectCode'));
+        setSubjects((prev) => mergeSubjectsComposite(prev, backup.subjects));
       }
       if (backup.quizzes.length > 0) {
         setQuizzes((prev) => mergeByKey(prev, backup.quizzes, 'id'));
@@ -627,7 +643,37 @@ export default function App() {
     if (result.subjects.length > 0) {
       handleImportSubjects(result.subjects, mode);
     }
-    triggerHud('นำเข้าข้อมูล JSON สำเร็จ', performance.now() - t0);
+    triggerHud('นำเข้าข้อมูลสำเร็จ', performance.now() - t0);
+  };
+
+  const handleApplyBanAphonPreset = (mode: 'merge' | 'replace' = 'replace') => {
+    const t0 = performance.now();
+    const { importResult, schoolMeta } = buildBanAphonFullImportResult();
+    if (importResult.teachers.length > 0) {
+      setTeachers((prev) =>
+        mode === 'replace'
+          ? importResult.teachers
+          : mergeByKey(prev, importResult.teachers, 'teacherCode')
+      );
+    }
+    if (importResult.subjects.length > 0) {
+      setSubjects((prev) =>
+        mode === 'replace'
+          ? importResult.subjects
+          : mergeSubjectsComposite(prev, importResult.subjects)
+      );
+    }
+    setSettings((prev) =>
+      sanitizeSystemSettings({
+        ...prev,
+        schoolName: schoolMeta.schoolName,
+        academicYear: schoolMeta.academicYear,
+      })
+    );
+    triggerHud(
+      `โหลดข้อมูล ${schoolMeta.schoolName}: ครู ${importResult.teachers.length} · วิชา ${importResult.subjects.length}`,
+      performance.now() - t0
+    );
   };
 
   const handleResetDemoData = () => {
@@ -840,6 +886,7 @@ export default function App() {
               onBulkUpdateSubjects={handleBulkUpdateSubjects}
               onBulkDeleteSubjects={handleBulkDeleteSubjects}
               onImportSubjects={handleImportSubjects}
+              onApplyBanAphonPreset={handleApplyBanAphonPreset}
             />
           )}
 
@@ -858,6 +905,7 @@ export default function App() {
               summary={summary}
               onRestoreBackup={handleRestoreBackup}
               onApplyJsonImport={handleApplyJsonImport}
+              onApplyBanAphonPreset={handleApplyBanAphonPreset}
               onBenchmark={triggerHud}
             />
           )}

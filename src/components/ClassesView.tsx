@@ -2,12 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CheckSquare,
   Download,
-  FileJson,
+  FileSpreadsheet,
   Layers,
   Pencil,
   Plus,
   Save,
   Search,
+  Sparkles,
   Trash2,
   Upload,
   X,
@@ -19,16 +20,22 @@ import type {
   Teacher,
 } from '../types/omr';
 import {
-  autoDetectAndParseJsonImport,
   SAMPLE_DMC_JSON,
-  SAMPLE_HRMS_TEACHERS_JSON,
-  SAMPLE_SUBJECTS_JSON,
+  SAMPLE_OBEC_HRMS_JSON,
+  SAMPLE_TIMETABLE_SUBJECTS_JSON,
+  type AutoJsonImportResult,
 } from '../utils/importExport';
 import {
   isInvalidStudentRecord,
   normalizeThaiClassName,
-  parseStudentCsv,
 } from '../utils/normalization';
+import {
+  exportRowsToXlsxDownload,
+  inspectTextOrSpreadsheetImport,
+  inspectWorkbookImport,
+  parseExcelWorkbook,
+  type ParsedWorkbook,
+} from '../utils/spreadsheetImport';
 
 interface ClassesViewProps {
   students: Student[];
@@ -56,6 +63,7 @@ interface ClassesViewProps {
   onBulkUpdateSubjects: (subjects: Subject[]) => void;
   onBulkDeleteSubjects: (subjectIds: string[]) => void;
   onImportSubjects: (subjects: Subject[], mode: 'merge' | 'replace') => void;
+  onApplyBanAphonPreset?: (mode: 'merge' | 'replace') => void;
 }
 
 type EntityTab = 'students' | 'teachers' | 'subjects';
@@ -149,10 +157,12 @@ export function ClassesView({
   onBulkUpdateSubjects,
   onBulkDeleteSubjects,
   onImportSubjects,
+  onApplyBanAphonPreset,
 }: ClassesViewProps) {
   const [activeTab, setActiveTab] = useState<EntityTab>('students');
   const [searchQuery, setSearchQuery] = useState('');
   const [classFilter, setClassFilter] = useState<string>('all');
+  const [subjectGradeFilter, setSubjectGradeFilter] = useState<string>('all');
 
   // Panel toggles
   const [showBatchAdd, setShowBatchAdd] = useState(false);
@@ -189,6 +199,8 @@ export function ClassesView({
   const [subjectArea, setSubjectArea] = useState('วิทยาศาสตร์และเทคโนโลยี');
   const [subjectGrade, setSubjectGrade] = useState('ม.1');
   const [subjectCredits, setSubjectCredits] = useState(1.5);
+  const [subjectTeacherName, setSubjectTeacherName] = useState('');
+  const [subjectPeriods, setSubjectPeriods] = useState<number>(2);
 
   // Multi-row batch add drafts
   const [batchStudentRows, setBatchStudentRows] = useState<BatchStudentDraft[]>(() =>
@@ -201,15 +213,24 @@ export function ClassesView({
     createEmptySubjectRows(3, 5)
   );
 
-  // JSON / CSV importer state
+  // Excel / CSV / JSON importer state
   const [importMode, setImportMode] = useState<'merge' | 'replace'>('merge');
-  const [importFormat, setImportFormat] = useState<'json' | 'csv'>('json');
   const [importText, setImportText] = useState(SAMPLE_DMC_JSON);
+  const [uploadedWorkbook, setUploadedWorkbook] = useState<ParsedWorkbook | null>(null);
+  const [selectedSheetName, setSelectedSheetName] = useState<string>('');
+  const [importPreview, setImportPreview] = useState<AutoJsonImportResult | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const digits = settings.studentIdDigits;
+
+  const activeImportHint: 'dmc_students' | 'hrms_teachers' | 'subjects' =
+    activeTab === 'students'
+      ? 'dmc_students'
+      : activeTab === 'teachers'
+      ? 'hrms_teachers'
+      : 'subjects';
 
   useEffect(() => {
     setSelectedIds(new Set());
@@ -219,10 +240,28 @@ export function ClassesView({
     setFormError(null);
     setSearchQuery('');
     setClassFilter('all');
-    if (activeTab === 'students') setImportText(SAMPLE_DMC_JSON);
-    if (activeTab === 'teachers') setImportText(SAMPLE_HRMS_TEACHERS_JSON);
-    if (activeTab === 'subjects') setImportText(SAMPLE_SUBJECTS_JSON);
-  }, [activeTab]);
+    setSubjectGradeFilter('all');
+    setUploadedWorkbook(null);
+    setSelectedSheetName('');
+    const nextSample =
+      activeTab === 'students'
+        ? SAMPLE_DMC_JSON
+        : activeTab === 'teachers'
+        ? SAMPLE_OBEC_HRMS_JSON
+        : SAMPLE_TIMETABLE_SUBJECTS_JSON;
+    setImportText(nextSample);
+    setImportPreview(
+      inspectTextOrSpreadsheetImport(
+        nextSample,
+        activeTab === 'students'
+          ? 'dmc_students'
+          : activeTab === 'teachers'
+          ? 'hrms_teachers'
+          : 'subjects',
+        digits
+      )
+    );
+  }, [activeTab, digits]);
 
   // Derived filtered lists
   const normalizedClasses = useMemo(() => {
@@ -230,6 +269,12 @@ export function ClassesView({
     for (const s of students) set.add(s.className);
     return Array.from(set).sort((a, b) => a.localeCompare(b, 'th'));
   }, [students]);
+
+  const subjectGrades = useMemo(() => {
+    const set = new Set<string>();
+    for (const sub of subjects) set.add(sub.gradeLevel);
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'th'));
+  }, [subjects]);
 
   const filteredStudents = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -253,7 +298,11 @@ export function ClassesView({
           !q ||
           t.fullName.toLowerCase().includes(q) ||
           t.teacherCode.toLowerCase().includes(q) ||
-          t.department.toLowerCase().includes(q)
+          t.department.toLowerCase().includes(q) ||
+          t.position.toLowerCase().includes(q) ||
+          (t.academicRank ?? '').toLowerCase().includes(q) ||
+          (t.major ?? '').toLowerCase().includes(q) ||
+          (t.homeroomClass ?? '').toLowerCase().includes(q)
       )
       .sort((a, b) => a.teacherCode.localeCompare(b.teacherCode));
   }, [teachers, searchQuery]);
@@ -261,15 +310,20 @@ export function ClassesView({
   const filteredSubjects = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return subjects
+      .filter((sub) =>
+        subjectGradeFilter === 'all' ? true : sub.gradeLevel === subjectGradeFilter
+      )
       .filter(
         (sub) =>
           !q ||
           sub.subjectName.toLowerCase().includes(q) ||
           sub.subjectCode.toLowerCase().includes(q) ||
-          sub.learningArea.toLowerCase().includes(q)
+          sub.learningArea.toLowerCase().includes(q) ||
+          sub.gradeLevel.toLowerCase().includes(q) ||
+          (sub.teacherName ?? '').toLowerCase().includes(q)
       )
-      .sort((a, b) => a.subjectCode.localeCompare(b.subjectCode));
-  }, [subjects, searchQuery]);
+      .sort((a, b) => a.gradeLevel.localeCompare(b.gradeLevel, 'th') || a.subjectCode.localeCompare(b.subjectCode));
+  }, [subjects, searchQuery, subjectGradeFilter]);
 
   const currentRowIds = useMemo(() => {
     if (activeTab === 'students') return filteredStudents.map((s) => s.id);
@@ -484,6 +538,8 @@ export function ClassesView({
           learningArea: subjectArea.trim() || 'ไม่ระบุกลุ่มสาระ',
           gradeLevel: normalizeThaiClassName(subjectGrade),
           credits: Math.max(0.5, subjectCredits),
+          periodsPerWeek: subjectPeriods > 0 ? subjectPeriods : existing.periodsPerWeek,
+          teacherName: subjectTeacherName.trim() || existing.teacherName,
         });
       }
       setEditingId(null);
@@ -495,12 +551,15 @@ export function ClassesView({
         learningArea: subjectArea.trim() || 'ไม่ระบุกลุ่มสาระ',
         gradeLevel: normalizeThaiClassName(subjectGrade),
         credits: Math.max(0.5, subjectCredits),
+        periodsPerWeek: subjectPeriods > 0 ? subjectPeriods : undefined,
+        teacherName: subjectTeacherName.trim() || undefined,
         sourceSystem: 'manual',
         createdAt: now,
       });
     }
     setSubjectCode('');
     setSubjectName('');
+    setSubjectTeacherName('');
   };
 
   // Multi-row batch add submit
@@ -579,45 +638,59 @@ export function ClassesView({
     setActionMessage(`เพิ่มรายวิชาพร้อมกัน ${validSubs.length} วิชาเรียบร้อย`);
   };
 
-  // JSON / CSV import runner
-  const handleRunImport = () => {
+  const handleFileUpload = async (file: File) => {
     setFormError(null);
-    if (importFormat === 'csv' && activeTab === 'students') {
-      const parsed = parseStudentCsv(importText, digits);
-      if (parsed.length === 0) {
-        setFormError('ไม่พบข้อมูลนักเรียนที่ถูกต้องใน CSV');
-        return;
+    const lowerName = file.name.toLowerCase();
+    if (lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls')) {
+      try {
+        const buffer = await file.arrayBuffer();
+        const wb = parseExcelWorkbook(buffer, file.name);
+        if (wb.sheetNames.length === 0) {
+          setFormError(`ไม่พบข้อมูลตารางในไฟล์ ${file.name}`);
+          return;
+        }
+        const defaultSheet = wb.sheetNames[0];
+        setUploadedWorkbook(wb);
+        setSelectedSheetName(defaultSheet);
+        const preview = inspectWorkbookImport(wb, defaultSheet, activeImportHint, digits);
+        setImportPreview(preview);
+        setActionMessage(`อ่านไฟล์ Excel ${file.name} (${wb.sheetNames.length} ชีต) สำเร็จ — ตรวจสอบตัวอย่างด้านล่างก่อนกดนำเข้า`);
+      } catch {
+        setFormError(`ไม่สามารถอ่านไฟล์ Excel ${file.name} ได้ กรุณาตรวจสอบไฟล์`);
       }
-      const created: Student[] = parsed.map((draft, idx) => ({
-        ...draft,
-        id: `stu_csv_${Date.now()}_${idx}`,
-        createdAt: new Date().toISOString(),
-      }));
-      onImportStudents(created, importMode);
-      setActionMessage(`นำเข้านักเรียนจาก CSV สำเร็จ ${created.length} คน`);
-      setShowImport(false);
       return;
     }
 
-    const hint =
-      activeTab === 'students'
-        ? 'dmc_students'
-        : activeTab === 'teachers'
-        ? 'hrms_teachers'
-        : 'subjects';
-    const res = autoDetectAndParseJsonImport(importText, hint, digits);
+    const txt = await file.text();
+    setUploadedWorkbook(null);
+    setSelectedSheetName('');
+    setImportText(txt);
+    setImportPreview(inspectTextOrSpreadsheetImport(txt, activeImportHint, digits));
+  };
+
+  // Excel / CSV / JSON import runner
+  const handleRunImport = () => {
+    setFormError(null);
+    const res = uploadedWorkbook
+      ? inspectWorkbookImport(uploadedWorkbook, selectedSheetName, activeImportHint, digits)
+      : inspectTextOrSpreadsheetImport(importText, activeImportHint, digits);
+
+    const skipSuffix =
+      res.skippedVacantCount && res.skippedVacantCount > 0
+        ? ` (ข้ามตำแหน่งว่าง ${res.skippedVacantCount} อัตรา)`
+        : '';
 
     if (activeTab === 'students' && res.students.length > 0) {
       onImportStudents(res.students, importMode);
-      setActionMessage(`นำเข้านักเรียนรูปแบบ DMC JSON สำเร็จ ${res.students.length} คน`);
+      setActionMessage(`นำเข้านักเรียนสำเร็จ ${res.students.length} คน`);
       setShowImport(false);
     } else if (activeTab === 'teachers' && res.teachers.length > 0) {
       onImportTeachers(res.teachers, importMode);
-      setActionMessage(`นำเข้าครูรูปแบบ HRMS JSON สำเร็จ ${res.teachers.length} คน`);
+      setActionMessage(`นำเข้าครู/บุคลากรสำเร็จ ${res.teachers.length} คน${skipSuffix}`);
       setShowImport(false);
     } else if (activeTab === 'subjects' && res.subjects.length > 0) {
       onImportSubjects(res.subjects, importMode);
-      setActionMessage(`นำเข้ารายวิชา JSON สำเร็จ ${res.subjects.length} วิชา`);
+      setActionMessage(`นำเข้ารายวิชาสำเร็จ ${res.subjects.length} รายการ`);
       setShowImport(false);
     } else {
       setFormError(res.summaryText || 'ไม่พบข้อมูลที่ตรงกับหมวดหมู่นี้');
@@ -642,6 +715,50 @@ export function ClassesView({
     URL.revokeObjectURL(url);
   };
 
+  const handleExportCurrentEntityXlsx = () => {
+    if (activeTab === 'students') {
+      exportRowsToXlsxDownload(
+        'students_dmc_export.xlsx',
+        'Students',
+        students.map((s) => ({
+          รหัสนักเรียน: s.studentCode,
+          เลขที่: s.numberInClass,
+          'ชื่อ-นามสกุล': s.fullName,
+          ห้องเรียน: s.className,
+          แหล่งข้อมูล: s.sourceSystem ?? 'manual',
+        }))
+      );
+    } else if (activeTab === 'teachers') {
+      exportRowsToXlsxDownload(
+        'teachers_hrms_export.xlsx',
+        'Teachers_HRMS',
+        teachers.map((t) => ({
+          ตำแหน่งเลขที่: t.positionNumber ?? t.teacherCode,
+          'ชื่อ-นามสกุล': t.fullName,
+          ชื่อตำแหน่ง: t.position,
+          'ระดับ/อันดับ': t.academicRank ?? '',
+          กลุ่มวิชาเอกตามมาตรฐานวิชาเอก: t.major ?? t.department,
+          ชั้นที่ปรึกษา: t.homeroomClass ?? '',
+          สถานะตำแหน่ง: t.positionStatus ?? 'มีคนถือครอง',
+        }))
+      );
+    } else {
+      exportRowsToXlsxDownload(
+        'subjects_timetable_export.xlsx',
+        'Timetable_Subjects',
+        subjects.map((sub) => ({
+          รหัสวิชา: sub.subjectCode,
+          ชื่อวิชา: sub.subjectName,
+          กลุ่มสาระการเรียนรู้: sub.learningArea,
+          ระดับชั้น: sub.gradeLevel,
+          'คาบ/สัปดาห์': sub.periodsPerWeek ?? '',
+          หน่วยกิต: sub.credits,
+          ครูผู้สอน: sub.teacherName ?? '',
+        }))
+      );
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header + Entity Switcher + Batch Toolbar */}
@@ -652,9 +769,12 @@ export function ClassesView({
               ฐานข้อมูลโรงเรียน: นักเรียน · ครูผู้สอน · รายวิชา
             </h1>
             <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-              เพิ่ม/แก้ไข/ลบทีละหลายคนแบบตาราง และนำเข้า-ส่งออก JSON รองรับระบบ{' '}
+              นำเข้าตรงจากไฟล์{' '}
+              <span className="font-mono font-medium">Excel (.xlsx)</span> ·{' '}
+              <span className="font-mono font-medium">CSV</span> ·{' '}
+              <span className="font-mono font-medium">JSON</span> รองรับ{' '}
               <span className="font-mono font-medium">DMC</span> และ{' '}
-              <span className="font-mono font-medium">HRMS</span>
+              <span className="font-mono font-medium">HRMS</span> พร้อมข้ามตำแหน่งว่างอัตโนมัติ
             </p>
           </div>
 
@@ -680,7 +800,16 @@ export function ClassesView({
               className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 whitespace-nowrap"
             >
               <Upload className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>นำเข้า JSON (DMC / HRMS)</span>
+              <span>นำเข้า Excel / CSV / JSON</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleExportCurrentEntityXlsx}
+              className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 whitespace-nowrap"
+            >
+              <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+              <span>ส่งออก .XLSX</span>
             </button>
 
             <button
@@ -704,7 +833,7 @@ export function ClassesView({
             [
               ['students', `นักเรียน (${students.length})`],
               ['teachers', `ครูผู้สอน HRMS (${teachers.length})`],
-              ['subjects', `รายวิชา (${subjects.length})`],
+              ['subjects', `รายวิชาตารางสอน (${subjects.length})`],
             ] as Array<[EntityTab, string]>
           ).map(([tabId, label]) => (
             <button
@@ -733,33 +862,19 @@ export function ClassesView({
           </div>
         )}
 
-        {/* JSON / CSV Import Drawer */}
+        {/* Excel / CSV / JSON Import Drawer */}
         {showImport && (
           <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50/70 p-4 space-y-3 dark:border-slate-700 dark:bg-slate-800/40">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-2 text-xs">
                 <span className="font-semibold text-slate-800 dark:text-slate-100">
-                  นำเข้าข้อมูล {activeTab === 'students' ? 'นักเรียน (DMC JSON / CSV)' : activeTab === 'teachers' ? 'ครู (HRMS JSON)' : 'รายวิชา (JSON)'}
+                  นำเข้าข้อมูล{' '}
+                  {activeTab === 'students'
+                    ? 'นักเรียน (Excel / CSV / DMC JSON)'
+                    : activeTab === 'teachers'
+                    ? 'บุคลากร HRMS (Excel / CSV / JSON · ข้ามตำแหน่งว่าง)'
+                    : 'รายวิชาตามตารางสอน (Excel / CSV / JSON)'}
                 </span>
-                {activeTab === 'students' && (
-                  <select
-                    aria-label="รูปแบบไฟล์นำเข้านักเรียน"
-                    value={importFormat}
-                    onChange={(e) => {
-                      const fmt = e.target.value as 'json' | 'csv';
-                      setImportFormat(fmt);
-                      setImportText(
-                        fmt === 'csv'
-                          ? '1015,เด็กชายธนกฤต สุขใจ,ป 1/1,1\n1016,เด็กหญิงพิมพ์มาดา ใจดี,ม.1 / 2,5'
-                          : SAMPLE_DMC_JSON
-                      );
-                    }}
-                    className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-white"
-                  >
-                    <option value="json">DMC JSON</option>
-                    <option value="csv">CSV รายบรรทัด</option>
-                  </select>
-                )}
                 <select
                   aria-label="โหมดการนำเข้า"
                   value={importMode}
@@ -771,39 +886,163 @@ export function ClassesView({
                 </select>
               </div>
 
-              <div>
+              <div className="flex flex-wrap items-center gap-2">
+                {onApplyBanAphonPreset && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onApplyBanAphonPreset('replace');
+                      setActionMessage(
+                        'โหลดข้อมูลโรงเรียนบ้านอาโพน (1032650660) เรียบร้อย: ครู 20 คน (HRMS 18 + ตารางสอน 2, ข้ามตำแหน่งว่าง 4854) และรายวิชาแยกตามระดับชั้น/ครูครบทุกห้อง'
+                      );
+                      setShowImport(false);
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-300 bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 dark:border-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-200 whitespace-nowrap"
+                  >
+                    <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>โหลดข้อมูลโรงเรียนบ้านอาโพน (2569)</span>
+                  </button>
+                )}
+
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".json,.csv,.txt"
+                  accept=".xlsx,.xls,.csv,.tsv,.json,.txt"
                   className="hidden"
                   onChange={async (e) => {
                     const f = e.target.files?.[0];
-                    if (f) {
-                      const txt = await f.text();
-                      setImportText(txt);
-                    }
+                    if (f) await handleFileUpload(f);
                     e.target.value = '';
                   }}
                 />
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 whitespace-nowrap"
                 >
-                  <FileJson className="h-3.5 w-3.5" aria-hidden="true" />
-                  <span>อัปโหลดไฟล์จากเครื่อง</span>
+                  <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+                  <span>อัปโหลด .XLSX / .CSV / .JSON</span>
                 </button>
               </div>
             </div>
 
-            <textarea
-              aria-label="วางข้อมูล JSON หรือ CSV"
-              rows={5}
-              value={importText}
-              onChange={(e) => setImportText(e.target.value)}
-              className="w-full rounded-xl border border-slate-300 bg-white p-3 font-mono text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
-            />
+            {/* Uploaded Excel Sheet Picker OR Text/Paste Area */}
+            {uploadedWorkbook ? (
+              <div className="rounded-xl border border-slate-200 bg-white p-3.5 space-y-2.5 dark:border-slate-700 dark:bg-slate-900">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="font-medium text-slate-800 dark:text-slate-100">
+                    ไฟล์ Excel: <span className="font-mono">{uploadedWorkbook.fileName}</span> ·{' '}
+                    <span className="font-mono tabular-nums">{uploadedWorkbook.sheetNames.length}</span> ชีต
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="classes-excel-sheet" className="text-slate-500 dark:text-slate-400">
+                      ชีตที่นำเข้า:
+                    </label>
+                    <select
+                      id="classes-excel-sheet"
+                      aria-label="เลือกชีต Excel"
+                      value={selectedSheetName}
+                      onChange={(e) => {
+                        const nextSheet = e.target.value;
+                        setSelectedSheetName(nextSheet);
+                        setImportPreview(
+                          inspectWorkbookImport(uploadedWorkbook, nextSheet, activeImportHint, digits)
+                        );
+                      }}
+                      className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                    >
+                      {uploadedWorkbook.sheetNames.map((name) => (
+                        <option key={name} value={name}>
+                          {name} ({uploadedWorkbook.sheets[name]?.length ?? 0} แถว)
+                        </option>
+                      ))}
+                      {uploadedWorkbook.sheetNames.length > 1 && (
+                        <option value="__ALL__">รวมทุกชีตในไฟล์</option>
+                      )}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUploadedWorkbook(null);
+                        setSelectedSheetName('');
+                        setImportPreview(
+                          inspectTextOrSpreadsheetImport(importText, activeImportHint, digits)
+                        );
+                      }}
+                      className="text-xs text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white"
+                    >
+                      สลับไปวางข้อความ
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="text-slate-500 dark:text-slate-400">ตัวอย่างรูปแบบจริง:</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const txt =
+                        activeTab === 'students'
+                          ? SAMPLE_DMC_JSON
+                          : activeTab === 'teachers'
+                          ? SAMPLE_OBEC_HRMS_JSON
+                          : SAMPLE_TIMETABLE_SUBJECTS_JSON;
+                      setImportText(txt);
+                      setImportPreview(inspectTextOrSpreadsheetImport(txt, activeImportHint, digits));
+                    }}
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  >
+                    {activeTab === 'students'
+                      ? 'ตัวอย่าง DMC JSON'
+                      : activeTab === 'teachers'
+                      ? 'ตัวอย่าง HRMS สพฐ. (บ้านอาโพน)'
+                      : 'ตัวอย่างวิชาตามตารางสอน (บ้านอาโพน)'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const txt =
+                        activeTab === 'students'
+                          ? 'รหัสนักเรียน,ชื่อ-สกุล,ห้องเรียน,เลขที่\n1015,เด็กชายธนกฤต สุขใจ,ป.1/1,1\n1016,เด็กหญิงพิมพ์มาดา ใจดี,ม.1,5'
+                          : activeTab === 'teachers'
+                          ? 'ตำแหน่งเลขที่,คำนำหน้าชื่อ,ชื่อ,นามสกุล,ชื่อตำแหน่ง,ระดับ/อันดับ,กลุ่มวิชาเอกตามมาตรฐานวิชาเอก,สถานะตำแหน่ง\n8209,นาย,อดิเรก,โพธิ์ธรรม,ครู,คศ. 3,วิทยาศาสตร์ (ประถมศึกษา/ม.ต้น),มีคนถือครอง\n4854,,,,ครู,,,ว่างรอเกลี่ย'
+                          : 'รหัสวิชา,ชื่อวิชา,กลุ่มสาระการเรียนรู้,ระดับชั้น,คาบ/สัปดาห์,หน่วยกิต,ครูผู้สอน\nค15101-5/1,คณิตศาสตร์,คณิตศาสตร์,ป.5/1,4,1.0,นายอดิเรก โพธิ์ธรรม\nค15101-5/2,คณิตศาสตร์,คณิตศาสตร์,ป.5/2,4,1.0,นายอดิเรก โพธิ์ธรรม';
+                      setImportText(txt);
+                      setImportPreview(inspectTextOrSpreadsheetImport(txt, activeImportHint, digits));
+                    }}
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  >
+                    ตัวอย่าง CSV / Copy จาก Excel
+                  </button>
+                </div>
+                <textarea
+                  aria-label="วางข้อมูล JSON หรือ CSV"
+                  rows={5}
+                  value={importText}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setImportText(val);
+                    setImportPreview(inspectTextOrSpreadsheetImport(val, activeImportHint, digits));
+                  }}
+                  className="w-full rounded-xl border border-slate-300 bg-white p-3 font-mono text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                />
+              </>
+            )}
+
+            {importPreview && (
+              <div
+                className={`rounded-lg border px-3 py-2 text-xs font-medium ${
+                  importPreview.detectedType === 'unknown'
+                    ? 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-900/50 dark:bg-rose-950/30 dark:text-rose-200'
+                    : 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-200'
+                }`}
+              >
+                {importPreview.summaryText}
+              </div>
+            )}
+
             <div className="flex justify-end gap-2">
               <button
                 type="button"
@@ -1253,7 +1492,7 @@ export function ClassesView({
                 />
               </div>
 
-              <div className="sm:col-span-4">
+              <div className="sm:col-span-3">
                 <label
                   htmlFor="subject-name-input"
                   className="block text-xs font-medium text-slate-700 dark:text-slate-300"
@@ -1265,23 +1504,7 @@ export function ClassesView({
                   type="text"
                   value={subjectName}
                   onChange={(e) => setSubjectName(e.target.value)}
-                  placeholder="เช่น วิทยาศาสตร์พื้นฐาน 2"
-                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                />
-              </div>
-
-              <div className="sm:col-span-2">
-                <label
-                  htmlFor="subject-area-input"
-                  className="block text-xs font-medium text-slate-700 dark:text-slate-300"
-                >
-                  กลุ่มสาระ
-                </label>
-                <input
-                  id="subject-area-input"
-                  type="text"
-                  value={subjectArea}
-                  onChange={(e) => setSubjectArea(e.target.value)}
+                  placeholder="เช่น วิทยาศาสตร์"
                   className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                 />
               </div>
@@ -1291,14 +1514,50 @@ export function ClassesView({
                   htmlFor="subject-grade-input"
                   className="block text-xs font-medium text-slate-700 dark:text-slate-300"
                 >
-                  ระดับชั้น
+                  ระดับชั้น/ห้อง
                 </label>
                 <input
                   id="subject-grade-input"
                   type="text"
                   value={subjectGrade}
                   onChange={(e) => setSubjectGrade(e.target.value)}
+                  placeholder="ป.5/1 หรือ ม.1"
                   className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                />
+              </div>
+
+              <div className="sm:col-span-2">
+                <label
+                  htmlFor="subject-teacher-input"
+                  className="block text-xs font-medium text-slate-700 dark:text-slate-300"
+                >
+                  ครูผู้สอน
+                </label>
+                <input
+                  id="subject-teacher-input"
+                  type="text"
+                  value={subjectTeacherName}
+                  onChange={(e) => setSubjectTeacherName(e.target.value)}
+                  placeholder="ชื่อครูผู้สอน"
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                />
+              </div>
+
+              <div className="sm:col-span-1">
+                <label
+                  htmlFor="subject-periods-input"
+                  className="block text-xs font-medium text-slate-700 dark:text-slate-300"
+                >
+                  คาบ
+                </label>
+                <input
+                  id="subject-periods-input"
+                  type="number"
+                  min={1}
+                  max={12}
+                  value={subjectPeriods}
+                  onChange={(e) => setSubjectPeriods(Number.parseInt(e.target.value, 10) || 1)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 font-mono text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                 />
               </div>
             </>
@@ -1480,12 +1739,29 @@ export function ClassesView({
                   </button>
                 ))}
               </div>
-            ) : (
+            ) : activeTab === 'teachers' ? (
               <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
-                {activeTab === 'teachers'
-                  ? `รายชื่อครูและบุคลากรทั้งหมด ${filteredTeachers.length} คน`
-                  : `รายวิชาในหลักสูตรทั้งหมด ${filteredSubjects.length} วิชา`}
+                รายชื่อครูและบุคลากรทั้งหมด <span className="font-mono tabular-nums">{filteredTeachers.length}</span> คน
               </span>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
+                  รายวิชาตามตารางสอน <span className="font-mono tabular-nums">{filteredSubjects.length}</span> รายการ
+                </span>
+                <select
+                  aria-label="กรองรายวิชาตามระดับชั้น"
+                  value={subjectGradeFilter}
+                  onChange={(e) => setSubjectGradeFilter(e.target.value)}
+                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                >
+                  <option value="all">ทุกระดับชั้น ({subjects.length})</option>
+                  {subjectGrades.map((grade) => (
+                    <option key={grade} value={grade}>
+                      {grade}
+                    </option>
+                  ))}
+                </select>
+              </div>
             )}
 
             {!bulkEditing && currentRowIds.length > 0 && (
@@ -1685,10 +1961,10 @@ export function ClassesView({
                       className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600"
                     />
                   </th>
-                  <th className="px-4 py-3">รหัสครู</th>
+                  <th className="px-4 py-3">เลขที่ตำแหน่ง / รหัส</th>
                   <th className="px-4 py-3">ชื่อ-นามสกุล</th>
-                  <th className="px-4 py-3">ตำแหน่ง</th>
-                  <th className="px-4 py-3">กลุ่มสาระ</th>
+                  <th className="px-4 py-3">ตำแหน่ง · อันดับ</th>
+                  <th className="px-4 py-3">วิชาเอก / กลุ่มสาระ</th>
                   <th className="px-4 py-3">ที่ปรึกษา</th>
                   <th className="px-6 py-3 text-right">จัดการ</th>
                 </tr>
@@ -1697,6 +1973,9 @@ export function ClassesView({
                 {filteredTeachers.map((t) => {
                   const isChecked = selectedIds.has(t.id);
                   const editRow = bulkEditing && isChecked ? teacherEdits[t.id] : null;
+                  const positionLabel = t.academicRank
+                    ? `${t.position} · ${t.academicRank}`
+                    : t.position;
                   return (
                     <tr
                       key={t.id}
@@ -1714,7 +1993,7 @@ export function ClassesView({
                         />
                       </td>
                       <td className="px-4 py-3 font-mono tabular-nums text-xs font-semibold text-indigo-600 dark:text-indigo-400">
-                        {t.teacherCode}
+                        {t.positionNumber ?? t.teacherCode}
                       </td>
                       <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">
                         {editRow ? (
@@ -1747,11 +2026,11 @@ export function ClassesView({
                             className="w-full rounded border border-indigo-300 bg-white px-2 py-1 text-xs dark:border-indigo-700 dark:bg-slate-900 dark:text-white"
                           />
                         ) : (
-                          t.position
+                          positionLabel
                         )}
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-300">
-                        {t.department}
+                        {t.major || t.department}
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400">
                         {t.homeroomClass || '—'}
@@ -1805,8 +2084,9 @@ export function ClassesView({
                   </th>
                   <th className="px-4 py-3">รหัสวิชา</th>
                   <th className="px-4 py-3">ชื่อรายวิชา</th>
-                  <th className="px-4 py-3">กลุ่มสาระ</th>
-                  <th className="px-4 py-3">ระดับชั้น</th>
+                  <th className="px-4 py-3">ระดับชั้น/ห้อง</th>
+                  <th className="px-4 py-3">ครูผู้สอน</th>
+                  <th className="px-4 py-3 text-right">คาบ/สัปดาห์</th>
                   <th className="px-4 py-3 text-right">หน่วยกิต</th>
                   <th className="px-6 py-3 text-right">จัดการ</th>
                 </tr>
@@ -1848,14 +2128,36 @@ export function ClassesView({
                             className="w-full rounded border border-indigo-300 bg-white px-2 py-1 text-xs dark:border-indigo-700 dark:bg-slate-900 dark:text-white"
                           />
                         ) : (
-                          sub.subjectName
+                          <div>
+                            <div>{sub.subjectName}</div>
+                            <div className="text-[11px] font-normal text-slate-500 dark:text-slate-400">
+                              {sub.learningArea}
+                            </div>
+                          </div>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-300">
-                        {sub.learningArea}
+                      <td className="px-4 py-3 text-xs text-slate-700 dark:text-slate-200">
+                        {sub.gradeLevel}
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-300">
-                        {sub.gradeLevel}
+                        {editRow ? (
+                          <input
+                            aria-label={`แก้ไขครูผู้สอน ${sub.subjectName}`}
+                            value={editRow.teacherName ?? ''}
+                            onChange={(e) =>
+                              setSubjectEdits((prev) => ({
+                                ...prev,
+                                [sub.id]: { ...editRow, teacherName: e.target.value },
+                              }))
+                            }
+                            className="w-full rounded border border-indigo-300 bg-white px-2 py-1 text-xs dark:border-indigo-700 dark:bg-slate-900 dark:text-white"
+                          />
+                        ) : (
+                          sub.teacherName || '—'
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono tabular-nums text-xs text-slate-700 dark:text-slate-200">
+                        {sub.periodsPerWeek ?? '—'}
                       </td>
                       <td className="px-4 py-3 text-right font-mono tabular-nums text-xs text-slate-700 dark:text-slate-200">
                         {sub.credits.toFixed(1)}
@@ -1871,6 +2173,8 @@ export function ClassesView({
                               setSubjectArea(sub.learningArea);
                               setSubjectGrade(sub.gradeLevel);
                               setSubjectCredits(sub.credits);
+                              setSubjectTeacherName(sub.teacherName ?? '');
+                              setSubjectPeriods(sub.periodsPerWeek ?? 2);
                             }}
                             aria-label={`แก้ไขวิชา ${sub.subjectName}`}
                             className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"

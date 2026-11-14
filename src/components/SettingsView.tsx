@@ -20,15 +20,20 @@ import type {
   Teacher,
 } from '../types/omr';
 import {
-  autoDetectAndParseJsonImport,
   exportFullSystemBackupJson,
   exportPostScanScoresJson,
   SAMPLE_DMC_JSON,
-  SAMPLE_HRMS_TEACHERS_JSON,
-  SAMPLE_SUBJECTS_JSON,
+  SAMPLE_OBEC_HRMS_JSON,
+  SAMPLE_TIMETABLE_SUBJECTS_JSON,
   type AutoJsonImportResult,
 } from '../utils/importExport';
 import { exportScansToCsv } from '../utils/normalization';
+import {
+  inspectTextOrSpreadsheetImport,
+  inspectWorkbookImport,
+  parseExcelWorkbook,
+  type ParsedWorkbook,
+} from '../utils/spreadsheetImport';
 import {
   computeThaiGrade,
   DEFAULT_GRADE_CUTOFFS,
@@ -56,6 +61,7 @@ interface SettingsViewProps {
     result: AutoJsonImportResult,
     mode: 'merge' | 'replace'
   ) => void;
+  onApplyBanAphonPreset?: (mode: 'merge' | 'replace') => void;
   onBenchmark: (label: string, ms: number) => void;
 }
 
@@ -85,6 +91,7 @@ export function SettingsView({
   summary,
   onRestoreBackup,
   onApplyJsonImport,
+  onApplyBanAphonPreset,
   onBenchmark,
 }: SettingsViewProps) {
   const [stage, setStage] = useState<SettingsStage>('stage1');
@@ -93,6 +100,8 @@ export function SettingsView({
     'auto' | 'dmc_students' | 'hrms_teachers' | 'subjects' | 'backup'
   >('auto');
   const [jsonText, setJsonText] = useState<string>('');
+  const [uploadedWorkbook, setUploadedWorkbook] = useState<ParsedWorkbook | null>(null);
+  const [selectedSheetName, setSelectedSheetName] = useState<string>('');
   const [importPreview, setImportPreview] = useState<AutoJsonImportResult | null>(
     null
   );
@@ -125,12 +134,14 @@ export function SettingsView({
     raw: string,
     hint: typeof formatHint = formatHint
   ) => {
+    setUploadedWorkbook(null);
+    setSelectedSheetName('');
     setJsonText(raw);
     if (!raw.trim()) {
       setImportPreview(null);
       return;
     }
-    const parsed = autoDetectAndParseJsonImport(
+    const parsed = inspectTextOrSpreadsheetImport(
       raw,
       hint,
       settings.studentIdDigits
@@ -139,6 +150,35 @@ export function SettingsView({
   };
 
   const handleFileSelected = async (file: File) => {
+    const lowerName = file.name.toLowerCase();
+    if (lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls')) {
+      try {
+        const buffer = await file.arrayBuffer();
+        const wb = parseExcelWorkbook(buffer, file.name);
+        if (wb.sheetNames.length === 0) {
+          setStatusNotice(`ไม่พบข้อมูลตารางในไฟล์ Excel ${file.name}`);
+          return;
+        }
+        const firstSheet = wb.sheetNames[0];
+        setUploadedWorkbook(wb);
+        setSelectedSheetName(firstSheet);
+        const hintForSheet = formatHint === 'backup' ? 'auto' : formatHint;
+        const preview = inspectWorkbookImport(
+          wb,
+          firstSheet,
+          hintForSheet,
+          settings.studentIdDigits
+        );
+        setImportPreview(preview);
+        setStatusNotice(
+          `โหลดไฟล์ Excel ${file.name} (${wb.sheetNames.length} ชีต) สำเร็จ — เลือกชีตและตรวจสอบตัวอย่างด้านล่างก่อนกดยืนยัน`
+        );
+      } catch {
+        setStatusNotice(`ไม่สามารถอ่านไฟล์ Excel ${file.name} ได้ กรุณาตรวจสอบไฟล์`);
+      }
+      return;
+    }
+
     const text = await file.text();
     handleParseText(text, formatHint);
     setStatusNotice(`โหลดไฟล์ ${file.name} สำเร็จ — ตรวจสอบตัวอย่างด้านล่างก่อนกดนำเข้า`);
@@ -154,6 +194,8 @@ export function SettingsView({
       setStatusNotice(`นำเข้าข้อมูลสำเร็จ: ${importPreview.summaryText}`);
     }
     setImportPreview(null);
+    setUploadedWorkbook(null);
+    setSelectedSheetName('');
     setJsonText('');
   };
 
@@ -903,18 +945,34 @@ export function SettingsView({
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-base font-semibold text-slate-900 dark:text-white">
-                  นำเข้าข้อมูล JSON รองรับ DMC, HRMS, รายวิชา และกู้คืนทั้งระบบ
+                  นำเข้าข้อมูล Excel (.xlsx) · CSV · JSON (DMC, HRMS, รายวิชา, Full Backup)
                 </h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  เลือกไฟล์ .json จากระบบ DMC / HRMS หรือวางข้อความ JSON ระบบจะตรวจจับโครงสร้างให้อัตโนมัติ
+                  เลือกไฟล์ .xlsx / .xls / .csv / .json หรือวางข้อมูลจาก Excel ระบบจะตรวจจับโครงสร้างและข้ามตำแหน่งว่างอัตโนมัติ
                 </p>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                {onApplyBanAphonPreset && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onApplyBanAphonPreset('replace');
+                      setStatusNotice(
+                        'โหลดข้อมูลโรงเรียนบ้านอาโพน (1032650660) เรียบร้อย: ครู 20 คน (HRMS 18 + ตารางสอน 2, ข้ามตำแหน่งว่าง 4854) และรายวิชาแยกตามระดับชั้น/ครูครบทุกห้อง'
+                      );
+                    }}
+                    className="inline-flex min-h-[40px] items-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-3.5 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 dark:border-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-200 whitespace-nowrap"
+                  >
+                    <Database className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>โหลดชุดข้อมูลโรงเรียนบ้านอาโพน (2569)</span>
+                  </button>
+                )}
+
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".json,application/json"
+                  accept=".xlsx,.xls,.csv,.tsv,.json,.txt,application/json"
                   className="hidden"
                   onChange={(e) => {
                     const file = e.target.files?.[0];
@@ -925,10 +983,10 @@ export function SettingsView({
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className="inline-flex min-h-[40px] items-center gap-2 rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  className="inline-flex min-h-[40px] items-center gap-2 rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 whitespace-nowrap"
                 >
                   <Upload className="h-3.5 w-3.5" aria-hidden="true" />
-                  <span>เลือกไฟล์ JSON</span>
+                  <span>เลือกไฟล์ .XLSX / .CSV / .JSON</span>
                 </button>
               </div>
             </div>
@@ -939,7 +997,7 @@ export function SettingsView({
                   htmlFor="io-format-hint"
                   className="block text-xs font-medium text-slate-700 dark:text-slate-300"
                 >
-                  รูปแบบข้อมูล JSON
+                  รูปแบบข้อมูล
                 </label>
                 <select
                   id="io-format-hint"
@@ -947,15 +1005,26 @@ export function SettingsView({
                   onChange={(e) => {
                     const nextHint = e.target.value as typeof formatHint;
                     setFormatHint(nextHint);
-                    if (jsonText.trim()) handleParseText(jsonText, nextHint);
+                    if (uploadedWorkbook) {
+                      setImportPreview(
+                        inspectWorkbookImport(
+                          uploadedWorkbook,
+                          selectedSheetName,
+                          nextHint === 'backup' ? 'auto' : nextHint,
+                          settings.studentIdDigits
+                        )
+                      );
+                    } else if (jsonText.trim()) {
+                      handleParseText(jsonText, nextHint);
+                    }
                   }}
                   className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                 >
                   <option value="auto">ตรวจจับอัตโนมัติ (แนะนำ)</option>
                   <option value="dmc_students">นักเรียนจากระบบ DMC</option>
-                  <option value="hrms_teachers">ครูและบุคลากรจากระบบ HRMS</option>
-                  <option value="subjects">รายวิชาและกลุ่มสาระ</option>
-                  <option value="backup">กู้คืนทั้งระบบ (Full Backup)</option>
+                  <option value="hrms_teachers">ครูและบุคลากรจากระบบ HRMS (ข้ามตำแหน่งว่าง)</option>
+                  <option value="subjects">รายวิชาตามตารางสอน</option>
+                  <option value="backup">กู้คืนทั้งระบบ (Full Backup JSON)</option>
                 </select>
               </div>
 
@@ -980,51 +1049,119 @@ export function SettingsView({
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              <span className="text-slate-500 dark:text-slate-400">
-                โหลดตัวอย่างโครงสร้าง:
-              </span>
-              <button
-                type="button"
-                onClick={() => handleParseText(SAMPLE_DMC_JSON, 'dmc_students')}
-                className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-              >
-                ตัวอย่าง DMC (นักเรียน)
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  handleParseText(SAMPLE_HRMS_TEACHERS_JSON, 'hrms_teachers')
-                }
-                className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-              >
-                ตัวอย่าง HRMS (ครู)
-              </button>
-              <button
-                type="button"
-                onClick={() => handleParseText(SAMPLE_SUBJECTS_JSON, 'subjects')}
-                className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-              >
-                ตัวอย่างรายวิชา JSON
-              </button>
-            </div>
+            {uploadedWorkbook ? (
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3 dark:border-slate-700 dark:bg-slate-800/50">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="font-medium text-slate-800 dark:text-slate-100">
+                    ไฟล์ Excel: <span className="font-mono">{uploadedWorkbook.fileName}</span> ·{' '}
+                    <span className="font-mono tabular-nums">{uploadedWorkbook.sheetNames.length}</span> ชีต
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label htmlFor="io-excel-sheet" className="text-slate-600 dark:text-slate-300">
+                      ชีตที่นำเข้า:
+                    </label>
+                    <select
+                      id="io-excel-sheet"
+                      aria-label="เลือกชีต Excel"
+                      value={selectedSheetName}
+                      onChange={(e) => {
+                        const nextSheet = e.target.value;
+                        setSelectedSheetName(nextSheet);
+                        setImportPreview(
+                          inspectWorkbookImport(
+                            uploadedWorkbook,
+                            nextSheet,
+                            formatHint === 'backup' ? 'auto' : formatHint,
+                            settings.studentIdDigits
+                          )
+                        );
+                      }}
+                      className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                    >
+                      {uploadedWorkbook.sheetNames.map((name) => (
+                        <option key={name} value={name}>
+                          {name} ({uploadedWorkbook.sheets[name]?.length ?? 0} แถว)
+                        </option>
+                      ))}
+                      {uploadedWorkbook.sheetNames.length > 1 && (
+                        <option value="__ALL__">รวมทุกชีตในไฟล์</option>
+                      )}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUploadedWorkbook(null);
+                        setSelectedSheetName('');
+                        setImportPreview(null);
+                      }}
+                      className="text-xs text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white"
+                    >
+                      ล้างไฟล์ Excel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="text-slate-500 dark:text-slate-400">
+                    โหลดตัวอย่างโครงสร้างจริง:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleParseText(SAMPLE_DMC_JSON, 'dmc_students')}
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  >
+                    ตัวอย่าง DMC (นักเรียน)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleParseText(SAMPLE_OBEC_HRMS_JSON, 'hrms_teachers')
+                    }
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  >
+                    ตัวอย่าง HRMS สพฐ. (บ้านอาโพน)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleParseText(SAMPLE_TIMETABLE_SUBJECTS_JSON, 'subjects')}
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  >
+                    ตัวอย่างรายวิชาตารางสอน
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleParseText(
+                        'ตำแหน่งเลขที่,คำนำหน้าชื่อ,ชื่อ,นามสกุล,ชื่อตำแหน่ง,ระดับ/อันดับ,กลุ่มวิชาเอกตามมาตรฐานวิชาเอก,สถานะตำแหน่ง\n8209,นาย,อดิเรก,โพธิ์ธรรม,ครู,คศ. 3,วิทยาศาสตร์ (ประถมศึกษา/ม.ต้น),มีคนถือครอง\n4854,,,,ครู,,,ว่างรอเกลี่ย',
+                        'hrms_teachers'
+                      )
+                    }
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  >
+                    ตัวอย่าง CSV / Excel Paste
+                  </button>
+                </div>
 
-            <div>
-              <label
-                htmlFor="io-json-textarea"
-                className="block text-xs font-medium text-slate-700 dark:text-slate-300"
-              >
-                วางข้อมูล JSON ที่นี่
-              </label>
-              <textarea
-                id="io-json-textarea"
-                rows={7}
-                value={jsonText}
-                onChange={(e) => handleParseText(e.target.value)}
-                placeholder='{"students": [...]} หรือ {"teachers": [...]} หรือไฟล์สำรองข้อมูล GradeScan'
-                className="mt-1.5 w-full rounded-xl border border-slate-300 bg-white p-3 font-mono text-xs text-slate-900 focus:border-indigo-600 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
-              />
-            </div>
+                <div>
+                  <label
+                    htmlFor="io-json-textarea"
+                    className="block text-xs font-medium text-slate-700 dark:text-slate-300"
+                  >
+                    วางข้อมูล JSON หรือ CSV / ตารางจาก Excel ที่นี่
+                  </label>
+                  <textarea
+                    id="io-json-textarea"
+                    rows={7}
+                    value={jsonText}
+                    onChange={(e) => handleParseText(e.target.value)}
+                    placeholder='วาง JSON หรือคัดลอกตารางจาก Excel (CSV/TSV) หรือคลิกปุ่ม "เลือกไฟล์ .XLSX / .CSV / .JSON"'
+                    className="mt-1.5 w-full rounded-xl border border-slate-300 bg-white p-3 font-mono text-xs text-slate-900 focus:border-indigo-600 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  />
+                </div>
+              </>
+            )}
 
             {importPreview && (
               <div
