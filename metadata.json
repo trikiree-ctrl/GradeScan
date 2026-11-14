@@ -1,0 +1,6 @@
+{
+  "name": "GradeScan OMR Studio",
+  "description": "ระบบตรวจข้อสอบปรนัย OMR อัจฉริยะและวิเคราะห์ผลสัมฤทธิ์ทางการเรียนระดับองค์กร (ZipGrade EdTech Studio)",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
